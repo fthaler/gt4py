@@ -286,7 +286,7 @@ class GPUStorage(Storage):
     def copy(self):
         res = super().copy()
         res.gpu_view[...] = self.gpu_view
-        cp.cuda.Device(0).synchronize()
+        # cp.cuda.Device(0).synchronize()
         return res
 
     @property
@@ -294,14 +294,14 @@ class GPUStorage(Storage):
         return storage_utils.gpu_view(self)
 
     def __getitem__(self, item):
-        self.device_to_host()
+        # self.device_to_host()
         return super().__getitem__(item)
 
     def __setitem__(self, key, value):
         if hasattr(value, "__cuda_array_interface__"):
             gpu_view = storage_utils.gpu_view(self)
-            gpu_view[key] = cp.asarray(value.data)
-            self.device_to_host(True)
+            gpu_view[key] = cp.asarray(value)
+            # self.device_to_host(True)
             return value
         else:
             return super().__setitem__(key, value)
@@ -329,11 +329,12 @@ class GPUStorage(Storage):
         self.__class__._modified_storages[id(self)] = self
 
     def synchronize(self):
-        self.device_to_host()
+        pass
+        # self.device_to_host() # removesync
 
     def device_to_host(self, force=False):
         if force or self._is_device_modified:
-            cp.cuda.Device(0).synchronize()
+            # cp.cuda.Device(0).synchronize()
             self.__class__._modified_storages.clear()
 
 

@@ -134,9 +134,9 @@ class CUIRCodegen(codegen.TemplatedGenerator):
         DataType.INT8: "std::int8_t",
         DataType.INT16: "std::int16_t",
         DataType.INT32: "std::int32_t",
-        DataType.INT64: "std::int64_t",
+        DataType.INT64: "std::int32_t", # dtypefix
         DataType.FLOAT32: "float",
-        DataType.FLOAT64: "double",
+        DataType.FLOAT64: "float", # dtypefix
     }
 
     def visit_DataType(self, dtype: DataType, **kwargs: Any) -> str:
@@ -499,8 +499,6 @@ class CUIRCodegen(codegen.TemplatedGenerator):
                             kernel_${id(kernel)},
                             0);
                     % endfor
-
-                    GT_CUDA_CHECK(cudaDeviceSynchronize());
                 };
             }
         }

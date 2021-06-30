@@ -180,10 +180,10 @@ class GTPyExtGenerator(gt_ir.IRNodeVisitor):
         gt_ir.DataType.INT8: "int8_t",
         gt_ir.DataType.INT16: "int16_t",
         gt_ir.DataType.INT32: "int32_t",
-        gt_ir.DataType.INT64: "int64_t",
+        gt_ir.DataType.INT64: "int32_t",
         gt_ir.DataType.FLOAT32: "float32_t",
-        gt_ir.DataType.FLOAT64: "float64_t",
-        gt_ir.DataType.DEFAULT: "float64_t",
+        gt_ir.DataType.FLOAT64: "float32_t",
+        gt_ir.DataType.DEFAULT: "float32_t",
     }
 
     NATIVE_FUNC_TO_CPP = {
