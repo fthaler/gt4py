@@ -3,15 +3,7 @@ from functional.iterator.backends import backend
 from functional.iterator.embedded import LocatedField
 from functional.iterator.transforms.constant_propagation import ConstantPropagation
 from functional.iterator.transforms.inline_fundefs import InlineFundefs, PruneUnreferencedFundefs
-from functional.tensor import jaxeval, lifting, shifts_to_slices, typing
-
-
-def argtype(arg):
-    assert isinstance(arg, LocatedField)
-    return typing.Tensor(
-        element=arg.dtype.name,
-        sizes=tuple((a.value, s) for a, s in zip(arg.axises, arg.array().shape)),
-    )
+from functional.tensor import jaxeval, lifting, shifts_to_slices
 
 
 def lift(prog, *args, offset_provider, **kwargs):
