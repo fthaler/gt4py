@@ -29,17 +29,50 @@ class MergedTracer(Tracer):
     tracers: list[Tracer]
 
     def shift(self, offsets):
-        return MergedTracer(tracers=[t.shift(offsets) for t in self.tracers])
+        return type(self)(tracers=[t.shift(offsets) for t in self.tracers])
+
+
+@dataclass
+class TupleTracer(MergedTracer):
+    ...
 
 
 class CollectShifts(evaluator.Evaluator):
     def visit_SymRef(self, node, *, syms):
-        if node.id in ("greater", "if_", "minus", "multiplies", "plus"):
+        if node.id in (
+            "divides",
+            "greater",
+            "if_",
+            "less",
+            "minus",
+            "multiplies",
+            "plus",
+            "eq",
+            "not_",
+            "and_",
+            "or_",
+        ):
 
             def fun(*args):
                 return MergedTracer([arg for arg in args if isinstance(arg, Tracer)])
 
             return fun
+        if node.id == "make_tuple":
+
+            def make_tuple(*args):
+                return TupleTracer([arg for arg in args if isinstance(arg, Tracer)])
+
+            return make_tuple
+        if node.id == "tuple_get":
+
+            def tuple_get(idx, arg):
+                if isinstance(arg, TupleTracer):
+                    return arg.tracers[idx]
+                if isinstance(arg, Tracer):
+                    return arg
+                raise NotImplementedError()
+
+            return tuple_get
         if node.id == "shift":
 
             def shift(*offsets):

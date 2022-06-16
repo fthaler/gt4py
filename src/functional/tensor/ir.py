@@ -60,8 +60,16 @@ BUILTINS = {
     "plus",
     "if_",
     "multiplies",
+    "divides",
     "greater",
+    "less",
     "minus",
+    "eq",
+    "not_",
+    "and_",
+    "or_",
+    "make_tuple",
+    "tuple_get",
 }
 
 

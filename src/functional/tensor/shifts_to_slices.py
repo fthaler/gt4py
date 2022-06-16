@@ -50,6 +50,13 @@ class ShiftsToSlices(eve.NodeTranslator):
             "divides",
             "if_",
             "greater",
+            "less",
+            "eq",
+            "not_",
+            "and_",
+            "or_",
+            "make_tuple",
+            "tuple_get",
         ):
             return ir.FunCall(
                 fun=node.fun,

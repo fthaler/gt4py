@@ -2,8 +2,10 @@ import operator
 from dataclasses import dataclass
 
 import jax
+import numpy as np
 from jax import numpy as jnp, tree_util
 
+from functional.iterator.embedded import LocatedField
 from functional.tensor import ir
 from functional.tensor.evaluator import Evaluator
 
@@ -45,6 +47,9 @@ class DimArray:
         assert not isinstance(other, DimArray)
         return DimArray(array=op(other, self.array), dims=self.dims)
 
+    def unary_op(self, op):
+        return DimArray(array=op(self.array), dims=self.dims)
+
     def __add__(self, other):
         return self.binary_op(other, operator.add)
 
@@ -63,8 +68,29 @@ class DimArray:
     def __rmul__(self, other):
         return self.binary_op(other, operator.mul)
 
+    def __truediv__(self, other):
+        return self.binary_op(other, operator.truediv)
+
+    def __rtruediv__(self, other):
+        return self.binary_op(other, operator.truediv)
+
     def __gt__(self, other):
         return self.binary_op(other, operator.gt)
+
+    def __lt__(self, other):
+        return self.binary_op(other, operator.lt)
+
+    def __eq__(self, other):
+        return self.binary_op(other, operator.eq)
+
+    def __and__(self, other):
+        return self.binary_op(other, operator.and_)
+
+    def __or__(self, other):
+        return self.binary_op(other, operator.or_)
+
+    def __invert__(self):
+        return self.unary_op(operator.invert)
 
 
 tree_util.register_pytree_node(
@@ -93,16 +119,66 @@ BUILTIN_SYMS = {
     "multiplies": operator.mul,
     "divides": operator.truediv,
     "greater": operator.gt,
+    "less": operator.lt,
+    "eq": operator.eq,
+    "not_": operator.invert,
+    "and_": operator.and_,
+    "or_": operator.or_,
+    "make_tuple": lambda *args: args,
+    "tuple_get": lambda idx, tup: tup[idx],
     "if_": _if_,
 }
+
+
+def _to_jax(inp, dims=None):
+    if isinstance(inp, tuple):
+        return tuple(_to_jax(i) for i in inp)
+    if isinstance(inp, np.ndarray):
+        assert dims is not None
+        return DimArray(array=jnp.asarray(inp), dims=dims)
+    dims = _get_dims(inp)
+    array = inp.array()
+    if array.dtype.fields:
+        return tuple(_to_jax(array[f], dims) for f in array.dtype.fields)
+    return DimArray(array=jnp.asarray(array), dims=dims)
+
+
+def _get_dims(output):
+    if isinstance(output, tuple):
+        assert all(_get_dims(o) == _get_dims(output[0]) for o in output[1:])
+        return _get_dims(output[0])
+    return tuple(a.value for a in output.axises)
+
+
+def _sliced_assign(output, evaluated, slices):
+    if isinstance(output, LocatedField):
+        return _sliced_assign(output.array(), evaluated, slices)
+    elif isinstance(output, tuple) and isinstance(evaluated, tuple):
+        assert len(output) == len(evaluated)
+        for o, e in zip(output, evaluated):
+            _sliced_assign(o, e, slices)
+    elif isinstance(evaluated, tuple):
+        assert len(output.dtype.fields) == len(evaluated)
+        for f, e in zip(output.dtype.fields, evaluated):
+            _sliced_assign(output[f], e, slices)
+        return
+    else:
+        output[slices] = evaluated.array
 
 
 class JaxEvaluator(Evaluator):
     def visit_Slice(self, node, *, syms):
         expr = self.visit(node.expr, syms=syms)
-        return expr.slice(
-            **{dim: (start, stop) for dim, start, stop in zip(node.dims, node.starts, node.stops)}
-        )
+        slices = {
+            dim: (start, stop) for dim, start, stop in zip(node.dims, node.starts, node.stops)
+        }
+
+        def apply_slice(expr):
+            if isinstance(expr, tuple):
+                return tuple(apply_slice(e) for e in expr)
+            return expr.slice(**slices)
+
+        return apply_slice(expr)
 
     def visit_Lambda(self, node, **kwargs):
         return jax.jit(super().visit_Lambda(node, **kwargs))
@@ -114,31 +190,27 @@ class JaxEvaluator(Evaluator):
             print(fun.lower(*args).compiler_ir())
         return fun(*args)
 
-    def visit_StencilClosure(self, node, *, argmap, offset_provider):
+    def visit_StencilClosure(self, node, *, argmap):
         wrapped = ir.FunCall(fun=node.stencil, args=node.inputs)
         args = dict()
-        dim_map = {v.value: k for k, v in offset_provider.items()}
         for arg in node.inputs:
-            argval = argmap[arg.id]
-            args[arg.id] = DimArray(
-                array=jnp.asarray(argval.array()),
-                dims=tuple(dim_map[a.value] for a in argval.axises),
-            )
+            args[arg.id] = _to_jax(argmap[arg.id])
         evaluated = self.visit(wrapped, syms=BUILTIN_SYMS | args)
         if isinstance(node.output, ir.SymRef):
             output = argmap[node.output.id]
-            slices = [Ellipsis]
+            slices = (Ellipsis,)
         else:
             output = argmap[node.output.expr.id]
             assert isinstance(node.output, ir.Slice)
-            dims = tuple(dim_map[a.value] for a in output.axises)
+            dims = _get_dims(output)
             slices = [slice(None) for _ in dims]
             for dim, start, stop in zip(node.output.dims, node.output.starts, node.output.stops):
                 slices[dims.index(dim)] = slice(start, stop)
-        output.array()[tuple(slices)] = evaluated.array
+            slices = tuple(slices)
+        _sliced_assign(output, evaluated, slices)
 
-    def visit_Fencil(self, node, *, args, offset_provider):
+    def visit_Fencil(self, node, *, args):
         argmap = {param.id: arg for param, arg in zip(node.params, args)}
 
         for closure in node.closures:
-            self.visit(closure, argmap=argmap, offset_provider=offset_provider)
+            self.visit(closure, argmap=argmap)
