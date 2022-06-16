@@ -68,7 +68,12 @@ def test_direct_deref(backend, use_tmps):
     out_s = np_as_located_field(IDim, JDim)(np.zeros_like(inp))
 
     fen_direct_deref(
-        *out.shape, out_s, inp_s, backend=backend, use_tmps=use_tmps, offset_provider=dict()
+        *out.shape,
+        out_s,
+        inp_s,
+        backend=backend,
+        use_tmps=use_tmps,
+        offset_provider={"I": IDim, "J": JDim},
     )
 
     if validate:
