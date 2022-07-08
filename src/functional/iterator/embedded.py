@@ -558,6 +558,7 @@ class LocatedFieldImpl(MutableLocatedField):
         self,
         getter: Callable[[FieldIndexOrIndices], Any],
         axes: tuple[Dimension, ...],
+        offsets: tuple[Any, ...],
         dtype,
         *,
         setter: Callable[[FieldIndexOrIndices, Any], None],
@@ -565,6 +566,7 @@ class LocatedFieldImpl(MutableLocatedField):
     ):
         self.getter = getter
         self._axes = axes
+        self.offsets = offsets
         self.setter = setter
         self.array = array
         self.dtype = dtype
@@ -637,7 +639,9 @@ def np_as_located_field(
         def getter(indices):
             return a[_tupsum(indices, offsets)]
 
-        return LocatedFieldImpl(getter, axes, dtype=a.dtype, setter=setter, array=a.__array__)
+        return LocatedFieldImpl(
+            getter, axes, offsets, dtype=a.dtype, setter=setter, array=a.__array__
+        )
 
     return _maker
 

@@ -1,6 +1,6 @@
 import pytest
 
-from functional.fencil_processors import double_roundtrip, gtfn, lisp, roundtrip
+from functional.fencil_processors import double_roundtrip, gtfn, lisp, roundtrip, tensor
 from functional.iterator import ir as itir
 from functional.iterator.pretty_parser import pparse
 from functional.iterator.pretty_printer import pformat
@@ -33,6 +33,7 @@ def pretty_format_and_check(root: itir.FencilDefinition, *args, **kwargs) -> str
         (pretty_format_and_check, False),
         (roundtrip.executor, True),
         (double_roundtrip.executor, True),
+        (tensor.run, False),
     ],
     ids=lambda p: f"backend={p[0].__module__.split('.')[-1] + '.' + p[0].__name__ if p[0] else p[0]}",
 )
