@@ -4,6 +4,7 @@ from functional.iterator.processor_interface import fencil_executor
 from functional.iterator.transforms.constant_propagation import ConstantPropagation
 from functional.iterator.transforms.pass_manager import apply_common_transforms
 from functional.iterator.transforms.remap_symbols import RemapSymbolRefs
+from functional.tensor.jaxeval import JaxEvaluator
 from functional.tensor.lifter import Lifter
 
 
@@ -55,5 +56,7 @@ def run(root, *args, **kwargs):
     root = ConstantPropagation().visit(root, constants=constants)
     root, args = _inline_domain(root, args)
 
-    lifted = Lifter().visit(root, args=args, offset_provider=kwargs["offset_provider"])
+    offset_provider = kwargs["offset_provider"]
+    lifted = Lifter().visit(root, args=args, offset_provider=offset_provider)
     print(lifted)
+    JaxEvaluator().visit(lifted, args=args, offset_provider=offset_provider)

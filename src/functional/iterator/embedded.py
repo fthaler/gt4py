@@ -578,8 +578,8 @@ class LocatedFieldImpl(MutableLocatedField):
     def __setitem__(self, indices: FieldIndexOrIndices, value: Any):
         self.setter(indices, value)
 
-    def __array__(self) -> np.ndarray:
-        return self.array()
+    def __array__(self, dtype=None) -> np.ndarray:
+        return self.array().__array__(dtype)
 
     @property
     def shape(self):
