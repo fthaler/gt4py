@@ -579,7 +579,9 @@ class LocatedFieldImpl(MutableLocatedField):
         self.setter(indices, value)
 
     def __array__(self, dtype=None) -> np.ndarray:
-        return self.array().__array__(dtype)
+        if dtype is not None:
+            return self.array().__array__(dtype)
+        return self.array().__array__()
 
     @property
     def shape(self):

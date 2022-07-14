@@ -102,6 +102,18 @@ class JaxEvaluator(eve.NodeTranslator):
                 return apply
 
             return fun, node.type
+        if node.name == "make_tuple":
+
+            def fun(*args):  # type: ignore
+                return args
+
+            return fun, node.type
+        if node.name == "tuple_get":
+
+            def fun(idx, tup):  # type: ignore
+                return tup[idx]
+
+            return fun, node.type
 
         raise NotImplementedError()
 
@@ -122,13 +134,42 @@ class JaxEvaluator(eve.NodeTranslator):
 
         return fun, node.type
 
+    @classmethod
+    def _to_numpy(cls, expr):
+        if isinstance(expr, tuple):
+            return tuple(cls._to_numpy(e) for e in expr)
+        return np.asarray(expr)
+
+    @classmethod
+    def _assign(cls, dst, src):
+        if isinstance(dst, tuple):
+            assert isinstance(src, tuple)
+            for d, s in zip(dst, src):
+                cls._assign(d, s)
+        else:
+            dst_array = np.asarray(dst)
+            if dst_array.dtype.names:
+                cls._assign(tuple(dst_array[n] for n in dst_array.dtype.names), src)
+            else:
+                dst_array[...] = src
+
     def visit_StencilClosure(self, node, argmap, **kwargs):
         fun = ir.FunCall(fun=node.stencil, args=node.inputs, type=node.output.type)
         out, outtype = self.visit(fun, jit=True, **kwargs)
-        argmap[node.output.id].array()[...] = np.asarray(out)
+
+        self._assign(argmap[node.output.id], self._to_numpy(out))
+
+    @classmethod
+    def _to_jax(cls, expr):
+        if isinstance(expr, tuple):
+            return tuple(cls._to_jax(e) for e in expr)
+        expr = np.asarray(expr)
+        if expr.dtype.names:
+            return tuple(cls._to_jax(expr[n]) for n in expr.dtype.names)
+        return jnp.asarray(expr)
 
     def visit_Fencil(self, node, *, args, offset_provider):
         argmap = {p.id: a for p, a in zip(node.params, args)}
-        syms = {k: jnp.asarray(v) for k, v in argmap.items()}
+        syms = {k: self._to_jax(v) for k, v in argmap.items()}
 
         self.visit(node.closures, argmap=argmap, syms=syms, offset_provider=offset_provider)
