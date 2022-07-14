@@ -57,7 +57,7 @@ class JaxEvaluator(eve.NodeTranslator):
             "eq": operator.eq,
             "and_": operator.and_,
             "or_": operator.or_,
-            "not_": operator.not_,
+            "not_": operator.inv,
         }
         if node.name in (
             "minus",
