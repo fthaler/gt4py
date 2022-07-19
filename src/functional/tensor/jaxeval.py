@@ -17,16 +17,22 @@ class JaxEvaluator(eve.NodeTranslator):
         dtype = node.type.dtype
         assert isinstance(dtype, ir.ScalarDType)
         if dtype.name in ("float", "int"):
-            return jnp.dtype(f"{dtype.name}{dtype.bits}").type(node.value), node.type
-        if dtype.name == "bool":
-            return jnp.bool_(node.value == "True"), node.type
-        return NotImplementedError()
+            value = np.dtype(f"{dtype.name}{dtype.bits}").type(node.value)
+        elif dtype.name == "bool":
+            value = node.value == "True"
+        else:
+            return NotImplementedError()
+        if node.type.dims:
+            value = jnp.full([d.stop - d.start for d in node.type.dims], value)
+        return value, node.type
 
     def visit_OffsetLiteral(self, node, **kwargs):
         return node.value, node.type
 
-    @staticmethod
-    def _slice_transpose(array, src_dims, dst_dims):
+    @classmethod
+    def _slice_transpose(cls, array, src_dims, dst_dims):
+        if isinstance(array, tuple):
+            return tuple(cls._slice_transpose(a, src_dims, dst_dims) for a in array)
         dst_dims_dict = {d.name: (d.start, d.stop) for d in dst_dims}
         slices = tuple(
             slice((d := dst_dims_dict[s.name])[0] - s.start, d[1] - s.start) for s in src_dims
@@ -46,7 +52,7 @@ class JaxEvaluator(eve.NodeTranslator):
         res = transposed[tuple(expanded_slices)]
         return res
 
-    def visit_Builtin(self, node, **kwargs):
+    def visit_Builtin(self, node, **kwargs):  # noqa: C901
         ops = {
             "minus": operator.sub,
             "plus": operator.add,
@@ -112,6 +118,45 @@ class JaxEvaluator(eve.NodeTranslator):
 
             def fun(idx, tup):  # type: ignore
                 return tup[idx]
+
+            return fun, node.type
+        if node.name == "subset":
+
+            def fun(x):  # type: ignore
+                return self._slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
+
+            return fun, node.type
+
+        if node.name == "scan":
+            full_dims = set().union(*({d.name for d in a.dims} for a in node.type.ret.args))
+            noncol_dims = set().union(*({d.name for d in a.dims} for a in node.type.args[0].args))
+            column_dims = full_dims - noncol_dims
+            assert len(column_dims) == 1
+            column_dim = next(iter(column_dims))
+
+            def fun(f, forward, init):  # type: ignore
+                def wrapped_f(carry, args):
+                    res = f(carry, *args)
+                    return (res, res)
+
+                def apply(*args):
+                    transposed_dims = []
+                    for dim in node.type.ret.ret.dims:
+                        if dim.name == column_dim:
+                            transposed_dims.insert(0, dim)
+                        else:
+                            transposed_dims.append(dim)
+
+                    args = tuple(
+                        self._slice_transpose(a, t.dims, transposed_dims)
+                        for a, t in zip(args, node.type.ret.args)
+                    )
+
+                    res = jax.lax.scan(wrapped_f, init, args, reverse=not forward)[1]
+
+                    return self._slice_transpose(res, transposed_dims, node.type.ret.ret.dims)
+
+                return apply
 
             return fun, node.type
 

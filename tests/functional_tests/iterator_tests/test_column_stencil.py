@@ -109,7 +109,7 @@ def test_ksum_scan(fencil_processor, use_tmps):
     if fencil_processor == gtfn.format_sourcecode:
         pytest.xfail("gtfn does not yet support scans")
     shape = [1, 7]
-    inp = np_as_located_field(IDim, KDim)(np.asarray([list(range(7))]))
+    inp = np_as_located_field(IDim, KDim)(np.asarray([list(range(7))], dtype="float64"))
     out = np_as_located_field(IDim, KDim)(np.zeros(shape))
 
     ref = np.asarray([[0, 1, 3, 6, 10, 15, 21]])
@@ -151,7 +151,7 @@ def test_ksum_back_scan(fencil_processor, use_tmps):
     if fencil_processor == gtfn.format_sourcecode:
         pytest.xfail("gtfn does not yet support scans")
     shape = [1, 7]
-    inp = np_as_located_field(IDim, KDim)(np.asarray([list(range(7))]))
+    inp = np_as_located_field(IDim, KDim)(np.asarray([list(range(7))], dtype="float64"))
     out = np_as_located_field(IDim, KDim)(np.zeros(shape))
 
     ref = np.asarray([[21, 21, 20, 18, 15, 11, 6]])

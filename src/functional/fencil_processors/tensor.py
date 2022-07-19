@@ -57,6 +57,8 @@ def run(root, *args, **kwargs):
     root, args = _inline_domain(root, args)
 
     offset_provider = kwargs["offset_provider"]
-    lifted = Lifter().visit(root, args=args, offset_provider=offset_provider)
+    lifted = Lifter().visit(
+        root, args=args, offset_provider=offset_provider, column_axis=kwargs.get("column_axis")
+    )
     print(lifted)
     JaxEvaluator().visit(lifted, args=args, offset_provider=offset_provider)

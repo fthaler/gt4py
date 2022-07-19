@@ -55,7 +55,7 @@ class Lifter(eve.NodeTranslator):
     def visit_OffsetLiteral(self, node, **kwargs):
         return teir.OffsetLiteral(type=teir.OffsetType(), value=node.value)
 
-    def visit_FunCall(self, node, *, symtypes, **kwargs):
+    def visit_FunCall(self, node, *, symtypes, **kwargs):  # noqa: C901
         args = tuple(self.visit(node.args, symtypes=symtypes, **kwargs))
         if isinstance(node.fun, itir.Lambda):
             argtypes = {p.id: a.type for p, a in zip(node.fun.params, args)}
@@ -141,6 +141,56 @@ class Lifter(eve.NodeTranslator):
             )
             shift_call = teir.FunCall(type=shift.type.ret, fun=shift, args=shifts)
             return teir.FunCall(type=shift_call.type.ret, fun=shift_call, args=args)
+        if isinstance(node.fun, itir.FunCall) and node.fun.fun == itir.SymRef(id="scan"):
+            forward = self.visit(node.fun.args[1], symtypes=symtypes, **kwargs)
+            init = self.visit(node.fun.args[2], symtypes=symtypes, **kwargs)
+            dims = common_dims([init.type.dims] + [arg.type.dims for arg in args])
+            column_axis = kwargs["column_axis"].value
+
+            def type_wo_column(t):
+                return teir.TensorType(
+                    dims=tuple(d for d in t.dims if d.name != column_axis), dtype=t.dtype
+                )
+
+            def broadcast(e, t):
+                if (
+                    isinstance(e, teir.FunCall)
+                    and isinstance(e.fun, teir.Builtin)
+                    and e.fun.name == "make_tuple"
+                ):
+                    arg_types = [teir.TensorType(dims=t.dims, dtype=e) for e in t.dtype.elems]
+                    args = [broadcast(a, at) for a, at in zip(e.args, arg_types)]
+                    return teir.FunCall(
+                        type=t,
+                        fun=teir.Builtin(
+                            type=teir.FunctionType(args=tuple(a.type for a in args), ret=t),
+                            name="make_tuple",
+                        ),
+                        args=tuple(args),
+                    )
+                assert isinstance(e, teir.Literal)
+                return teir.Literal(type=t, value=e.value)
+
+            ret = teir.TensorType(dims=dims, dtype=init.type.dtype)
+            init = broadcast(init, type_wo_column(ret))
+            scan_fun = node.fun.args[0]
+            scan_fun_argtypes = [init.type] + [type_wo_column(a.type) for a in args]
+            scan_fun_symtypes = symtypes | {
+                p.id: t for p, t in zip(scan_fun.params, scan_fun_argtypes)
+            }
+            scan_fun = self.visit(scan_fun, symtypes=symtypes | scan_fun_symtypes, **kwargs)
+
+            funtype = teir.FunctionType(args=tuple(a.type for a in args), ret=ret)
+            scan_args = (scan_fun, forward, init)
+            scan = teir.Builtin(
+                name="scan",
+                type=teir.FunctionType(args=tuple(a.type for a in scan_args), ret=funtype),
+            )
+            scan_call = teir.FunCall(type=scan.type.ret, fun=scan, args=scan_args)
+            return teir.FunCall(type=scan_call.type.ret, fun=scan_call, args=args)
+        if isinstance(node.fun, itir.FunCall) and node.fun.fun == itir.SymRef(id="lift"):
+            unlifted_call = itir.FunCall(fun=node.fun.args[0], args=node.args)
+            return self.visit(unlifted_call, symtypes=symtypes, **kwargs)
         raise NotImplementedError()
 
     def visit_Lambda(self, node, **kwargs):
@@ -161,7 +211,7 @@ class Lifter(eve.NodeTranslator):
             raise NotImplementedError()
         return teir.StencilClosure(stencil=stencil, output=output, inputs=inputs)
 
-    def visit_FencilDefinition(self, node, *, args, offset_provider):
+    def visit_FencilDefinition(self, node, *, args, offset_provider, column_axis):
         assert not node.function_definitions
 
         def get_dtype(x):
@@ -201,7 +251,12 @@ class Lifter(eve.NodeTranslator):
 
         params = tuple(self.visit(node.params, symtypes=argtypes))
         closures = tuple(
-            self.visit(node.closures, symtypes=argtypes, offset_provider=offset_provider)
+            self.visit(
+                node.closures,
+                symtypes=argtypes,
+                offset_provider=offset_provider,
+                column_axis=column_axis,
+            )
         )
 
         return teir.Fencil(id=node.id, params=params, closures=closures)
