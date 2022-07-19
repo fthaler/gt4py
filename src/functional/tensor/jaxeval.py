@@ -16,9 +16,13 @@ class IndexField:
     axis: str
 
     def __getitem__(self, indices):
-        assert isinstance(indices, tuple)
-        assert indices[0].ndim == 1
-        return indices[0]
+        (indices,) = indices
+        if isinstance(indices, slice):
+            if indices.start is indices.stop is None:
+                return self
+            return jnp.arange(indices.start, indices.stop)
+        assert indices.ndim == 1
+        return indices
 
 
 register_pytree_node(
