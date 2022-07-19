@@ -41,6 +41,9 @@ class Lifter(eve.NodeTranslator):
         elif node.type.startswith("float"):
             name = node.type[:5]
             bitstr = node.type[5:]
+        elif node.type == "bool":
+            name = node.type
+            bitstr = "8"
         else:
             raise NotImplementedError()
         bits = int(bitstr) if bitstr else 64
