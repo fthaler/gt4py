@@ -2,7 +2,7 @@ import operator
 
 import eve
 from functional.iterator import ir as itir
-from functional.iterator.embedded import LocatedFieldImpl
+from functional.iterator.embedded import IndexField, LocatedFieldImpl
 from functional.tensor import ir as teir
 
 
@@ -275,6 +275,11 @@ class Lifter(eve.NodeTranslator):
                     for d, o, s in zip(x.axes, x.offsets, shape)
                 )
                 return teir.TensorType(dims=dims, dtype=get_dtype(x.array().dtype))
+            if isinstance(x, IndexField):
+                return teir.TensorType(
+                    dims=(teir.Dim(name=x.axis.value, start=-1000000000, stop=1000000000),),
+                    dtype=teir.ScalarDType(name="int", bits=64),
+                )
             if isinstance(x, (int, float)):
                 return teir.TensorType(
                     dims=(), dtype=teir.ScalarDType(name=type(x).__name__, bits=64)
