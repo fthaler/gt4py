@@ -152,7 +152,8 @@ class Lifter(eve.NodeTranslator):
             assert len(shifts) % 2 == 0
             dims_dict = {d.name: (d.start, d.stop) for d in args[0].type.dims}
             offset_provider = kwargs["offset_provider"]
-            for dim, offset in zip(node.fun.args[::2], node.fun.args[1::2]):
+            rshifts = list(reversed(node.fun.args))
+            for dim, offset in zip(rshifts[1::2], rshifts[::2]):
                 provider = offset_provider[dim.value]
                 if isinstance(provider, embedded.NeighborTableOffsetProvider):
                     del dims_dict[provider.neighbor_axis.value]

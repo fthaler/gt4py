@@ -126,19 +126,25 @@ class JaxEvaluator(eve.NodeTranslator):
         if node.name == "shift":
 
             def fun(*offsets):  # type: ignore
+                roffsets = tuple(reversed(offsets))
+
                 def apply(x):
 
                     assert len(offsets) % 2 == 0
                     nonlocal node
-                    for dim, dim_type, offset in zip(offsets[::2], node.type.args, offsets[1::2]):
+                    dims = node.type.ret.args[0].dims
+                    for dim, dim_type, offset in zip(
+                        roffsets[1::2], node.type.args[-2::-2], roffsets[::2]
+                    ):
                         if isinstance(dim_type, ir.TensorType):
                             nb_dim = dim_type.dims[1].name.removeprefix("NB_")
                             indices = dim[:, offset]
                             slices = tuple(
-                                indices if s.name == nb_dim else slice(None)
-                                for s in node.type.ret.args[0].dims
+                                indices if d.name == nb_dim else slice(None) for d in dims
                             )
+                            dims = tuple(dim_type.dims[0] if d.name == nb_dim else d for d in dims)
                             x = x[slices]
+                    assert dims == node.type.ret.ret.dims
 
                     return x
 
