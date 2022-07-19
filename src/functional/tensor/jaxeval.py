@@ -160,6 +160,13 @@ class JaxEvaluator(eve.NodeTranslator):
 
             return fun, node.type
 
+        if node.name == "can_deref":
+
+            def fun(x):  # type: ignore
+                return ~jnp.isnan(x)
+
+            return fun, node.type
+
         if node.name == "scan":
             full_dims = set().union(*({d.name for d in a.dims} for a in node.type.ret.args))
             noncol_dims = set().union(*({d.name for d in a.dims} for a in node.type.args[0].args))

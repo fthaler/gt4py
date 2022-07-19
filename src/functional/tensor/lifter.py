@@ -89,6 +89,16 @@ class Lifter(eve.NodeTranslator):
                     expr=teir.SymRef(id="x", type=args[0].type),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
+            if node.fun.id == "can_deref":
+                assert len(args) == 1
+                ret = teir.TensorType(
+                    dims=args[0].type.dims, dtype=teir.ScalarDType(name="bool", bits=8)
+                )
+                fun = teir.Builtin(
+                    name=node.fun.id,
+                    type=teir.FunctionType(args=(args[0].type,), ret=ret),
+                )
+                return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
             if node.fun.id in ("multiplies", "plus", "minus", "divides", "and_", "or_"):
                 ret = common_tensor_type(arg.type for arg in args)
                 fun = teir.Builtin(
