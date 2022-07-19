@@ -1,3 +1,5 @@
+import operator
+
 import eve
 from functional.iterator import ir as itir
 from functional.iterator.embedded import LocatedFieldImpl
@@ -202,13 +204,51 @@ class Lifter(eve.NodeTranslator):
             expr=expr,
         )
 
+    @staticmethod
+    def _subset(node, src_dims, dst_dims):
+        assert set(s.name for s in src_dims) == set(d.name for d in dst_dims)
+        relative_offsets = dict()
+        key = operator.attrgetter("name")
+        for s, d in zip(sorted(src_dims, key=key), sorted(dst_dims, key=key)):
+            start_offset = d.start - s.start
+            stop_offset = d.stop - s.stop
+            assert start_offset >= 0 and stop_offset <= 0
+            relative_offsets[s.name] = start_offset, stop_offset
+
+        def update_dim(d):
+            start_offset, stop_offset = relative_offsets.get(d.name, (0, 0))
+            if start_offset == stop_offset == 0:
+                return d
+            return teir.Dim(name=d.name, start=d.start + start_offset, stop=d.stop + stop_offset)
+
+        assert isinstance(node.type, teir.TensorType)
+        dims = tuple(update_dim(d) for d in node.type.dims)
+        ret = teir.TensorType(dtype=node.type.dtype, dims=dims)
+        funtype = teir.FunctionType(args=(node.type,), ret=ret)
+        subset = teir.Builtin(name="subset", type=funtype)
+        return teir.FunCall(type=funtype.ret, fun=subset, args=(node,))
+
+    @classmethod
+    def _subset_result(cls, fun, dst_dims):
+        called = teir.FunCall(
+            type=fun.type.ret,
+            fun=fun,
+            args=tuple(teir.SymRef(type=p.type, id=p.id) for p in fun.params),
+        )
+        subset = cls._subset(called, fun.type.ret.dims, dst_dims)
+        return teir.Lambda(
+            type=teir.FunctionType(args=fun.type.args, ret=subset.type),
+            params=fun.params,
+            expr=subset,
+        )
+
     def visit_StencilClosure(self, node, **kwargs):
         output = self.visit(node.output, **kwargs)
         inputs = tuple(self.visit(node.inputs, **kwargs))
         call = itir.FunCall(fun=node.stencil, args=node.inputs)
         stencil = self.visit(call, **kwargs).fun
         if output.type != stencil.type.ret:
-            raise NotImplementedError()
+            stencil = self._subset_result(stencil, output.type.dims)
         return teir.StencilClosure(stencil=stencil, output=output, inputs=inputs)
 
     def visit_FencilDefinition(self, node, *, args, offset_provider, column_axis):
