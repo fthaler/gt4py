@@ -1,11 +1,31 @@
 import operator
+from dataclasses import dataclass
 
 import jax
 import numpy as np
 from jax import numpy as jnp
+from jax.tree_util import register_pytree_node
 
 import eve
+from functional.iterator import embedded
 from functional.tensor import ir
+
+
+@dataclass
+class IndexField:
+    axis: str
+
+    def __getitem__(self, indices):
+        assert isinstance(indices, tuple)
+        assert indices[0].ndim == 1
+        return indices[0]
+
+
+register_pytree_node(
+    IndexField,
+    lambda x: ((), x.axis),
+    lambda axis, _: IndexField(axis=axis),
+)
 
 
 class JaxEvaluator(eve.NodeTranslator):
@@ -103,6 +123,19 @@ class JaxEvaluator(eve.NodeTranslator):
 
             def fun(*offsets):  # type: ignore
                 def apply(x):
+
+                    assert len(offsets) % 2 == 0
+                    nonlocal node
+                    for dim, dim_type, offset in zip(offsets[::2], node.type.args, offsets[1::2]):
+                        if isinstance(dim_type, ir.TensorType):
+                            nb_dim = dim_type.dims[1].name.removeprefix("NB_")
+                            indices = dim[:, offset]
+                            slices = tuple(
+                                indices if s.name == nb_dim else slice(None)
+                                for s in node.type.ret.args[0].dims
+                            )
+                            x = x[slices]
+
                     return x
 
                 return apply
@@ -208,6 +241,8 @@ class JaxEvaluator(eve.NodeTranslator):
     def _to_jax(cls, expr):
         if isinstance(expr, tuple):
             return tuple(cls._to_jax(e) for e in expr)
+        if isinstance(expr, embedded.IndexField):
+            return IndexField(axis=expr.axis.value)
         expr = np.asarray(expr)
         if expr.dtype.names:
             return tuple(cls._to_jax(expr[n]) for n in expr.dtype.names)
@@ -216,5 +251,10 @@ class JaxEvaluator(eve.NodeTranslator):
     def visit_Fencil(self, node, *, args, offset_provider):
         argmap = {p.id: a for p, a in zip(node.params, args)}
         syms = {k: self._to_jax(v) for k, v in argmap.items()}
+
+        for k, v in offset_provider.items():
+            if isinstance(v, embedded.NeighborTableOffsetProvider):
+                assert k not in syms
+                syms[k] = self._to_jax(v.tbl)
 
         self.visit(node.closures, argmap=argmap, syms=syms, offset_provider=offset_provider)

@@ -1,8 +1,7 @@
 import operator
 
 import eve
-from functional.iterator import ir as itir
-from functional.iterator.embedded import IndexField, LocatedFieldImpl
+from functional.iterator import embedded, ir as itir
 from functional.tensor import ir as teir
 
 
@@ -27,6 +26,17 @@ def common_tensor_type(types):
     assert all(t.dtype == types[0].dtype for t in types)
     dims = common_dims(t.dims for t in types)
     return teir.TensorType(dims=dims, dtype=types[0].dtype)
+
+
+def neighbor_table_type(provider):
+    assert isinstance(provider, embedded.NeighborTableOffsetProvider)
+    dims = (
+        teir.Dim(name=provider.origin_axis.value, start=0, stop=provider.tbl.shape[0]),
+        teir.Dim(name=f"NB_{provider.neighbor_axis.value}", start=0, stop=provider.tbl.shape[1]),
+    )
+    return teir.TensorType(
+        dims=dims, dtype=teir.ScalarDType(name="int", bits=provider.tbl.dtype.itemsize * 8)
+    )
 
 
 class Lifter(eve.NodeTranslator):
@@ -54,7 +64,14 @@ class Lifter(eve.NodeTranslator):
             value=node.value,
         )
 
-    def visit_OffsetLiteral(self, node, **kwargs):
+    def visit_OffsetLiteral(self, node, *, offset_provider, **kwargs):
+        if isinstance(
+            (provider := offset_provider.get(node.value)), embedded.NeighborTableOffsetProvider
+        ):
+            return teir.SymRef(
+                type=neighbor_table_type(provider),
+                id=node.value,
+            )
         return teir.OffsetLiteral(type=teir.OffsetType(), value=node.value)
 
     def visit_FunCall(self, node, *, symtypes, **kwargs):  # noqa: C901
@@ -125,11 +142,17 @@ class Lifter(eve.NodeTranslator):
             assert len(shifts) % 2 == 0
             dims_dict = {d.name: (d.start, d.stop) for d in args[0].type.dims}
             offset_provider = kwargs["offset_provider"]
-            for dim, offset in zip(shifts[::2], shifts[1::2]):
-                d = offset_provider[dim.value].value
-                if d in dims_dict:
-                    start, stop = dims_dict[d]
-                    dims_dict[d] = (start - offset.value, stop - offset.value)
+            for dim, offset in zip(node.fun.args[::2], node.fun.args[1::2]):
+                provider = offset_provider[dim.value]
+                if isinstance(provider, embedded.NeighborTableOffsetProvider):
+                    del dims_dict[provider.neighbor_axis.value]
+                    dims_dict[provider.origin_axis.value] = (0, provider.tbl.shape[0])
+                else:
+                    assert isinstance(provider, embedded.Dimension)
+                    d = provider.value
+                    if d in dims_dict:
+                        start, stop = dims_dict[d]
+                        dims_dict[d] = (start - offset.value, stop - offset.value)
             dims = tuple(
                 teir.Dim(name=name, start=start, stop=stop)
                 for name, (start, stop) in dims_dict.items()
@@ -268,14 +291,14 @@ class Lifter(eve.NodeTranslator):
             return teir.ScalarDType(name=name, bits=x.itemsize * 8)
 
         def get_type(x):
-            if isinstance(x, LocatedFieldImpl):
+            if isinstance(x, embedded.LocatedFieldImpl):
                 shape = x.array().shape
                 dims = tuple(
                     teir.Dim(name=d.value, start=-o, stop=s + -o)
                     for d, o, s in zip(x.axes, x.offsets, shape)
                 )
                 return teir.TensorType(dims=dims, dtype=get_dtype(x.array().dtype))
-            if isinstance(x, IndexField):
+            if isinstance(x, embedded.IndexField):
                 return teir.TensorType(
                     dims=(teir.Dim(name=x.axis.value, start=-1000000000, stop=1000000000),),
                     dtype=teir.ScalarDType(name="int", bits=64),
@@ -304,4 +327,10 @@ class Lifter(eve.NodeTranslator):
             )
         )
 
-        return teir.Fencil(id=node.id, params=params, closures=closures)
+        neighbor_tables = tuple(
+            teir.Sym(type=neighbor_table_type(v), id=k)
+            for k, v in offset_provider.items()
+            if isinstance(v, embedded.NeighborTableOffsetProvider)
+        )
+
+        return teir.Fencil(id=node.id, params=params + neighbor_tables, closures=closures)
