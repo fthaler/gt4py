@@ -124,7 +124,7 @@ class Lifter(eve.NodeTranslator):
                 d = offset_provider[dim.value].value
                 if d in dims_dict:
                     start, stop = dims_dict[d]
-                    dims_dict[d] = (start + offset.value, stop + offset.value)
+                    dims_dict[d] = (start - offset.value, stop - offset.value)
             dims = tuple(
                 teir.Dim(name=name, start=start, stop=stop)
                 for name, (start, stop) in dims_dict.items()
