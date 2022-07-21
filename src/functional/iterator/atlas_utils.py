@@ -11,6 +11,8 @@
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
+import numpy as np
+
 
 try:
     from atlas4py import IrregularConnectivity
@@ -35,3 +37,21 @@ class AtlasTable:
                 return self.atlas_connectivity[primary_index, neigh_index]
             else:
                 raise AssertionError()
+
+    @property
+    def shape(self):
+        return self.atlas_connectivity.rows, self.atlas_connectivity.maxcols
+
+    @property
+    def dtype(self):
+        return np.dtype("int")
+
+    def __array__(self, dtype=None):
+        if dtype is None:
+            dtype = self.dtype
+        res = np.empty(self.shape, dtype=dtype)
+        for i in range(self.shape[0]):
+            for j in range(self.shape[1]):
+                value = self[i, j]
+                res[i, j] = -1 if value is None else value
+        return res
