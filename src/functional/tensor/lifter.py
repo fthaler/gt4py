@@ -103,12 +103,7 @@ class Lifter(eve.NodeTranslator):
         if isinstance(node.fun, itir.SymRef):
             if node.fun.id == "deref":
                 assert len(args) == 1
-                fun = teir.Lambda(
-                    type=teir.FunctionType(args=(args[0].type,), ret=args[0].type),
-                    params=(teir.Sym(id="x", type=args[0].type),),
-                    expr=teir.SymRef(id="x", type=args[0].type),
-                )
-                return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
+                return args[0]
             if node.fun.id == "can_deref":
                 assert len(args) == 1
                 ret = teir.TensorType(
@@ -357,8 +352,19 @@ class Lifter(eve.NodeTranslator):
     def visit_StencilClosure(self, node, **kwargs):
         output = self.visit(node.output, **kwargs)
         inputs = tuple(self.visit(node.inputs, **kwargs))
-        call = itir.FunCall(fun=node.stencil, args=node.inputs)
-        stencil = self.visit(call, **kwargs).fun
+        call = self.visit(itir.FunCall(fun=node.stencil, args=node.inputs), **kwargs)
+        if isinstance(call, teir.SymRef):
+            # handling of direct deref
+            call = teir.FunCall(
+                type=call.type,
+                args=(call,),
+                fun=teir.Lambda(
+                    type=teir.FunctionType(args=(call.type,), ret=call.type),
+                    params=(teir.Sym(type=call.type, id="x"),),
+                    expr=teir.SymRef(type=call.type, id="x"),
+                ),
+            )
+        stencil = call.fun
         if output.type != stencil.type.ret:
             stencil = self._subset_result(stencil, output.type.dims)
         return teir.StencilClosure(stencil=stencil, output=output, inputs=inputs)
