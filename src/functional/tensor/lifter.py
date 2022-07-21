@@ -273,8 +273,14 @@ class Lifter(eve.NodeTranslator):
                 for dim in dims:
                     if dim.name.startswith("_NB_"):
                         idx = max(idx, int(dim.name[4:]))
-                assert idx >= 0
-                rdim = f"_NB_{idx}"
+                if idx >= 0:
+                    rdim = f"_NB_{idx}"
+                else:
+                    # could be a pre-shifted sparse field
+                    offset_provider = kwargs["offset_provider"]
+                    rdim_candidates = {d.name for d in dims} & set(offset_provider)
+                    assert len(rdim_candidates) == 1
+                    rdim = next(iter(rdim_candidates))
                 return tuple(d for d in dims if d.name != rdim)
 
             init = self.visit(node.fun.args[1], symtypes=symtypes, **kwargs)
