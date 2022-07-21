@@ -32,7 +32,7 @@ def neighbor_table_type(provider):
     assert isinstance(provider, embedded.NeighborTableOffsetProvider)
     dims = (
         teir.Dim(name=provider.origin_axis.value, start=0, stop=provider.tbl.shape[0]),
-        teir.Dim(name=f"NB_{provider.neighbor_axis.value}", start=0, stop=provider.tbl.shape[1]),
+        teir.Dim(name=f"_NB_{provider.neighbor_axis.value}", start=0, stop=provider.tbl.shape[1]),
     )
     return teir.TensorType(
         dims=dims, dtype=teir.ScalarDType(name="int", bits=provider.tbl.dtype.itemsize * 8)
@@ -57,6 +57,16 @@ def broadcast(e, t):
         )
     assert isinstance(e, teir.Literal)
     return teir.Literal(type=t, value=e.value)
+
+
+def highest_nb_dim(dim_names, add_one=False):
+    dim_names = set(dim_names)
+    idx = 0
+    while f"_NB_{idx}" in dim_names:
+        idx += 1
+    if not add_one:
+        idx -= 1
+    return f"_NB_{idx}"
 
 
 class Lifter(eve.NodeTranslator):
@@ -176,22 +186,15 @@ class Lifter(eve.NodeTranslator):
                 assert isinstance(offset, itir.OffsetLiteral)
                 if isinstance(offset.value, int):
                     # applying a partial (unstructured) shift
-                    for us in unstructured_shifts:
-                        if us[1] is None:
-                            us[1] = offset.value
-                            break
-                    else:
-                        raise RuntimeError("Found no dimension to apply partial shift")
+                    unstructured_shifts.insert(0, offset.value)
                 else:
                     provider = offset_provider[offset.value]
                     if isinstance(provider, embedded.NeighborTableOffsetProvider):
                         if offset_stack and isinstance(offset_stack[-1].value, int):
                             # full unstructured shift
-                            neighbor = offset_stack.pop().value
-                            unstructured_shifts.append([offset.value, neighbor])
-                        else:
-                            # partial unstructured shift
-                            unstructured_shifts.append([offset.value, None])
+                            unstructured_shifts.append(offset_stack.pop().value)
+                        # starting a partial unstructured shift
+                        unstructured_shifts.append(offset.value)
                     else:
                         # full Cartesian shift (no support for partial shifts here)
                         distance = offset_stack.pop().value
@@ -206,16 +209,18 @@ class Lifter(eve.NodeTranslator):
                     dims_dict[d] = (start - offset, stop - offset)
 
             # handle unstructured shifts
-            for dim, offset in reversed(unstructured_shifts):
-                provider = offset_provider[dim]
-                del dims_dict[provider.neighbor_axis.value]
-                dims_dict[provider.origin_axis.value] = (0, provider.tbl.shape[0])
-                if offset is None:
-                    # partial shift adds a new dimension
-                    idx = 0
-                    while f"_NB_{idx}" in dims_dict:
-                        idx += 1
-                    dims_dict[f"_NB_{idx}"] = (0, provider.max_neighbors)
+            for offset in reversed(unstructured_shifts):
+                if isinstance(offset, int):
+                    # apply a partial shift
+                    nb_dim = highest_nb_dim(dims_dict)
+                    del dims_dict[nb_dim]
+                else:
+                    # start a partial shift
+                    provider = offset_provider[offset]
+                    del dims_dict[provider.neighbor_axis.value]
+                    dims_dict[provider.origin_axis.value] = (0, provider.tbl.shape[0])
+                    nb_dim = highest_nb_dim(dims_dict, add_one=True)
+                    dims_dict[nb_dim] = (0, provider.max_neighbors)
 
             dims = tuple(
                 teir.Dim(name=name, start=start, stop=stop)
@@ -264,18 +269,7 @@ class Lifter(eve.NodeTranslator):
         if isinstance(node.fun, itir.FunCall) and node.fun.fun == itir.SymRef(id="reduce"):
 
             def remove_reduction_dim(dims):
-                idx = -1
-                for dim in dims:
-                    if dim.name.startswith("_NB_"):
-                        idx = max(idx, int(dim.name[4:]))
-                if idx >= 0:
-                    rdim = f"_NB_{idx}"
-                else:
-                    # could be a pre-shifted sparse field
-                    offset_provider = kwargs["offset_provider"]
-                    rdim_candidates = {d.name for d in dims} & set(offset_provider)
-                    assert len(rdim_candidates) == 1
-                    rdim = next(iter(rdim_candidates))
+                rdim = highest_nb_dim(d.name for d in dims)
                 return tuple(d for d in dims if d.name != rdim)
 
             init = self.visit(node.fun.args[1], symtypes=symtypes, **kwargs)
@@ -389,7 +383,11 @@ class Lifter(eve.NodeTranslator):
             if isinstance(x, embedded.LocatedFieldImpl):
                 shape = x.array().shape
                 dims = tuple(
-                    teir.Dim(name=d.value, start=-o, stop=s + -o)
+                    teir.Dim(
+                        name="_NB_0" if d.value in offset_provider else d.value,
+                        start=-o,
+                        stop=s + -o,
+                    )
                     for d, o, s in zip(x.axes, x.offsets, shape)
                 )
                 return teir.TensorType(dims=dims, dtype=get_dtype(x.array().dtype))

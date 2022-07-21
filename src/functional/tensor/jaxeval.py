@@ -9,6 +9,7 @@ from jax.tree_util import register_pytree_node
 import eve
 from functional.iterator import embedded
 from functional.tensor import ir
+from functional.tensor.lifter import highest_nb_dim
 
 
 @dataclass
@@ -145,6 +146,51 @@ class JaxEvaluator(eve.NodeTranslator):
             def fun(*offsets):  # type: ignore
                 def apply(x):
 
+                    offset_stack = list(zip(reversed(offsets), reversed(node.type.args)))
+                    unstructured_shifts = []
+
+                    while offset_stack:
+                        offset, offset_type = offset_stack.pop()
+                        if isinstance(offset, int):
+                            # applying a partial shift
+                            unstructured_shifts.insert(0, (offset, offset_type))
+                        elif isinstance(offset, str):
+                            # Cartesian shift is a no-op, just pop the offset
+                            offset_stack.pop()
+                        else:
+                            if offset_stack and isinstance(offset_stack[-1][0], int):
+                                # full shift
+                                unstructured_shifts.append(offset_stack.pop())
+                            # starting a partial shift
+                            unstructured_shifts.append((offset, offset_type))
+
+                    dims = [d.name for d in node.type.ret.args[0].dims]
+                    for offset, offset_type in reversed(unstructured_shifts):
+                        if isinstance(offset, int):
+                            nb_dim = highest_nb_dim(dims)
+                            i = dims.index(nb_dim)
+                            slices = [slice(None)] * len(dims)
+                            slices[i] = offset
+                            del dims[i]
+                            x = x[tuple(slices)]
+                        else:
+                            dim = offset_type.dims[1].name.removeprefix("_NB_")
+                            i = dims.index(dim)
+                            slices = [slice(None)] * len(dims)
+                            slices[i] = offset
+                            nb_dim = highest_nb_dim(dims, add_one=True)
+                            dims[i] = offset_type.dims[0].name
+                            dims.insert(i + 1, nb_dim)
+                            mask_slices = [np.newaxis] * len(dims)
+                            mask_slices[i] = slice(None)
+                            mask_slices[i + 1] = slice(None)
+                            mask = (offset == -1)[tuple(mask_slices)]
+                            x = jnp.where(mask, masked_value(x.dtype), x[tuple(slices)])
+
+                    assert dims == [d.name for d in node.type.ret.ret.dims]
+
+                    return x
+
                     offset_stack = list(zip(offsets, node.type.args))
                     dims = node.type.ret.args[0].dims
                     while offset_stack:
@@ -157,7 +203,7 @@ class JaxEvaluator(eve.NodeTranslator):
                             assert not isinstance(dim, int)
 
                             # full unstructured shift
-                            nb_dim = dim_type.dims[1].name.removeprefix("NB_")
+                            nb_dim = dim_type.dims[1].name.removeprefix("_NB_")
                             indices = dim[:, offset]
                             slices = tuple(
                                 indices if d.name == nb_dim else slice(None) for d in dims
@@ -171,7 +217,7 @@ class JaxEvaluator(eve.NodeTranslator):
                         else:
                             # partial unstructured shift
                             dim, dim_type = offset, offset_type
-                            nb_dim = dim_type.dims[1].name.removeprefix("NB_")
+                            nb_dim = dim_type.dims[1].name.removeprefix("_NB_")
                             indices = dim
                             slices = tuple(
                                 indices if d.name == nb_dim else slice(None) for d in dims
