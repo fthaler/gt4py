@@ -39,6 +39,26 @@ def neighbor_table_type(provider):
     )
 
 
+def broadcast(e, t):
+    if (
+        isinstance(e, teir.FunCall)
+        and isinstance(e.fun, teir.Builtin)
+        and e.fun.name == "make_tuple"
+    ):
+        arg_types = [teir.TensorType(dims=t.dims, dtype=e) for e in t.dtype.elems]
+        args = [broadcast(a, at) for a, at in zip(e.args, arg_types)]
+        return teir.FunCall(
+            type=t,
+            fun=teir.Builtin(
+                type=teir.FunctionType(args=tuple(a.type for a in args), ret=t),
+                name="make_tuple",
+            ),
+            args=tuple(args),
+        )
+    assert isinstance(e, teir.Literal)
+    return teir.Literal(type=t, value=e.value)
+
+
 class Lifter(eve.NodeTranslator):
     def visit_Sym(self, node, *, symtypes, **kwargs):
         return teir.Sym(type=symtypes[node.id], id=node.id)
@@ -149,21 +169,59 @@ class Lifter(eve.NodeTranslator):
         if isinstance(node.fun, itir.FunCall) and node.fun.fun == itir.SymRef(id="shift"):
             assert len(args) == 1
             shifts = tuple(self.visit(node.fun.args, symtypes=symtypes, **kwargs))
-            assert len(shifts) % 2 == 0
             dims_dict = {d.name: (d.start, d.stop) for d in args[0].type.dims}
             offset_provider = kwargs["offset_provider"]
-            rshifts = list(reversed(node.fun.args))
-            for dim, offset in zip(rshifts[1::2], rshifts[::2]):
-                provider = offset_provider[dim.value]
-                if isinstance(provider, embedded.NeighborTableOffsetProvider):
-                    del dims_dict[provider.neighbor_axis.value]
-                    dims_dict[provider.origin_axis.value] = (0, provider.tbl.shape[0])
+
+            cartesian_shifts = []
+            unstructured_shifts = []
+
+            offset_stack = list(reversed(node.fun.args))
+            while offset_stack:
+                offset = offset_stack.pop()
+                assert isinstance(offset, itir.OffsetLiteral)
+                if isinstance(offset.value, int):
+                    # applying a partial (unstructured) shift
+                    for us in unstructured_shifts:
+                        if us[1] is None:
+                            us[1] = offset.value
+                            break
+                    else:
+                        raise RuntimeError("Found no dimension to apply partial shift")
                 else:
-                    assert isinstance(provider, embedded.Dimension)
-                    d = provider.value
-                    if d in dims_dict:
-                        start, stop = dims_dict[d]
-                        dims_dict[d] = (start - offset.value, stop - offset.value)
+                    provider = offset_provider[offset.value]
+                    if isinstance(provider, embedded.NeighborTableOffsetProvider):
+                        if offset_stack and isinstance(offset_stack[-1].value, int):
+                            # full unstructured shift
+                            neighbor = offset_stack.pop().value
+                            unstructured_shifts.append([offset.value, neighbor])
+                        else:
+                            # partial unstructured shift
+                            unstructured_shifts.append([offset.value, None])
+                    else:
+                        # full Cartesian shift (no support for partial shifts here)
+                        distance = offset_stack.pop().value
+                        assert isinstance(distance, int)
+                        cartesian_shifts.append((offset.value, distance))
+
+            # handle Cartesian shifts
+            for dim, offset in cartesian_shifts:
+                d = offset_provider[dim].value
+                if d in dims_dict:
+                    start, stop = dims_dict[d]
+                    dims_dict[d] = (start - offset, stop - offset)
+
+            # handle unstructured shifts
+            for dim, offset in reversed(unstructured_shifts):
+                provider = offset_provider[dim]
+                del dims_dict[provider.neighbor_axis.value]
+                dims_dict[provider.origin_axis.value] = (0, provider.tbl.shape[0])
+                if offset is None:
+                    # partial shift adds a new dimension
+                    idx = 0
+                    while f"_NB_{idx}" in dims_dict:
+                        idx += 1
+                    dims_dict[f"_NB_{idx}"] = (0, provider.max_neighbors)
+
             dims = tuple(
                 teir.Dim(name=name, start=start, stop=stop)
                 for name, (start, stop) in dims_dict.items()
@@ -188,25 +246,6 @@ class Lifter(eve.NodeTranslator):
                     dims=tuple(d for d in t.dims if d.name != column_axis), dtype=t.dtype
                 )
 
-            def broadcast(e, t):
-                if (
-                    isinstance(e, teir.FunCall)
-                    and isinstance(e.fun, teir.Builtin)
-                    and e.fun.name == "make_tuple"
-                ):
-                    arg_types = [teir.TensorType(dims=t.dims, dtype=e) for e in t.dtype.elems]
-                    args = [broadcast(a, at) for a, at in zip(e.args, arg_types)]
-                    return teir.FunCall(
-                        type=t,
-                        fun=teir.Builtin(
-                            type=teir.FunctionType(args=tuple(a.type for a in args), ret=t),
-                            name="make_tuple",
-                        ),
-                        args=tuple(args),
-                    )
-                assert isinstance(e, teir.Literal)
-                return teir.Literal(type=t, value=e.value)
-
             ret = teir.TensorType(dims=dims, dtype=init.type.dtype)
             init = broadcast(init, type_wo_column(ret))
             scan_fun = node.fun.args[0]
@@ -227,6 +266,39 @@ class Lifter(eve.NodeTranslator):
         if isinstance(node.fun, itir.FunCall) and node.fun.fun == itir.SymRef(id="lift"):
             unlifted_call = itir.FunCall(fun=node.fun.args[0], args=node.args)
             return self.visit(unlifted_call, symtypes=symtypes, **kwargs)
+        if isinstance(node.fun, itir.FunCall) and node.fun.fun == itir.SymRef(id="reduce"):
+
+            def remove_reduction_dim(dims):
+                idx = -1
+                for dim in dims:
+                    if dim.name.startswith("_NB_"):
+                        idx = max(idx, int(dim.name[4:]))
+                assert idx >= 0
+                rdim = f"_NB_{idx}"
+                return tuple(d for d in dims if d.name != rdim)
+
+            init = self.visit(node.fun.args[1], symtypes=symtypes, **kwargs)
+            dims = common_dims([init.type.dims] + [remove_reduction_dim(a.type.dims) for a in args])
+            ret = teir.TensorType(dims=dims, dtype=init.type.dtype)
+            init = broadcast(init, ret)
+            red_fun = node.fun.args[0]
+            red_fun_argtypes = [init.type] + [
+                teir.TensorType(dims=remove_reduction_dim(a.type.dims), dtype=a.type.dtype)
+                for a in args
+            ]
+            red_fun_symtypes = symtypes | {
+                p.id: t for p, t in zip(red_fun.params, red_fun_argtypes)
+            }
+            red_fun = self.visit(red_fun, symtypes=symtypes | red_fun_symtypes, **kwargs)
+            funtype = teir.FunctionType(args=tuple(a.type for a in args), ret=ret)
+            red_args = (red_fun, init)
+            red = teir.Builtin(
+                name="reduce",
+                type=teir.FunctionType(args=tuple(a.type for a in red_args), ret=funtype),
+            )
+            red_call = teir.FunCall(type=red.type.ret, fun=red, args=red_args)
+            return teir.FunCall(type=red_call.type.ret, fun=red_call, args=args)
+
         raise NotImplementedError()
 
     def visit_Lambda(self, node, **kwargs):

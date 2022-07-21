@@ -21,7 +21,6 @@ class IndexField:
             if indices.start is indices.stop is None:
                 return self
             return jnp.arange(indices.start, indices.stop)
-        assert indices.ndim == 1
         return indices
 
 
@@ -126,23 +125,52 @@ class JaxEvaluator(eve.NodeTranslator):
         if node.name == "shift":
 
             def fun(*offsets):  # type: ignore
-                roffsets = tuple(reversed(offsets))
-
                 def apply(x):
 
-                    assert len(offsets) % 2 == 0
-                    nonlocal node
+                    offset_stack = list(zip(offsets, node.type.args))
                     dims = node.type.ret.args[0].dims
-                    for dim, dim_type, offset in zip(
-                        roffsets[1::2], node.type.args[-2::-2], roffsets[::2]
-                    ):
-                        if isinstance(dim_type, ir.TensorType):
+                    while offset_stack:
+                        offset, offset_type = offset_stack.pop()
+                        if isinstance(offset, int):
+                            dim, dim_type = offset_stack.pop()
+                            if isinstance(dim, str):
+                                # cartesian shift is a no-op
+                                continue
+                            assert not isinstance(dim, int)
+
+                            # full unstructured shift
                             nb_dim = dim_type.dims[1].name.removeprefix("NB_")
                             indices = dim[:, offset]
                             slices = tuple(
                                 indices if d.name == nb_dim else slice(None) for d in dims
                             )
                             dims = tuple(dim_type.dims[0] if d.name == nb_dim else d for d in dims)
+                            x = x[slices]
+                        else:
+                            # partial unstructured shift
+                            dim, dim_type = offset, offset_type
+                            nb_dim = dim_type.dims[1].name.removeprefix("NB_")
+                            indices = dim
+                            slices = tuple(
+                                indices if d.name == nb_dim else slice(None) for d in dims
+                            )
+                            idx = 0
+                            while f"_NB_{idx}" in {d.name for d in dims}:
+                                idx += 1
+                            new_dims = []
+                            for dim in dims:
+                                if dim.name == nb_dim:
+                                    new_dims.append(dim_type.dims[0])
+                                    new_dims.append(
+                                        ir.Dim(
+                                            name=f"_NB_{idx}",
+                                            start=dim_type.dims[1].start,
+                                            stop=dim_type.dims[1].stop,
+                                        )
+                                    )
+                                else:
+                                    new_dims.append(dim)
+                            dims = tuple(new_dims)
                             x = x[slices]
                     assert dims == node.type.ret.ret.dims
 
@@ -183,6 +211,12 @@ class JaxEvaluator(eve.NodeTranslator):
             column_dims = full_dims - noncol_dims
             assert len(column_dims) == 1
             column_dim = next(iter(column_dims))
+            transposed_dims = []
+            for dim in node.type.ret.ret.dims:
+                if dim.name == column_dim:
+                    transposed_dims.insert(0, dim)
+                else:
+                    transposed_dims.append(dim)
 
             def fun(f, forward, init):  # type: ignore
                 def wrapped_f(carry, args):
@@ -190,21 +224,44 @@ class JaxEvaluator(eve.NodeTranslator):
                     return (res, res)
 
                 def apply(*args):
-                    transposed_dims = []
-                    for dim in node.type.ret.ret.dims:
-                        if dim.name == column_dim:
-                            transposed_dims.insert(0, dim)
-                        else:
-                            transposed_dims.append(dim)
-
                     args = tuple(
                         self._slice_transpose(a, t.dims, transposed_dims)
                         for a, t in zip(args, node.type.ret.args)
                     )
 
                     res = jax.lax.scan(wrapped_f, init, args, reverse=not forward)[1]
-
                     return self._slice_transpose(res, transposed_dims, node.type.ret.ret.dims)
+
+                return apply
+
+            return fun, node.type
+
+        if node.name == "reduce":
+            transposed_arg_dims = []
+            ret_dims = {d.name for d in node.type.ret.ret.dims}
+            for arg in node.type.ret.args:
+                transposed_dims = []
+                red_dims = {d.name for d in arg.dims} - ret_dims
+                assert len(red_dims) == 1
+                red_dim = next(iter(red_dims))
+                for dim in arg.dims:
+                    if dim.name == red_dim:
+                        transposed_dims.insert(0, dim)
+                    else:
+                        transposed_dims.append(dim)
+                transposed_arg_dims.append(transposed_dims)
+
+            def fun(f, init):  # type: ignore
+                def wrapped_f(carry, args):
+                    res = f(carry, *args)
+                    return (res, res)
+
+                def apply(*args):
+                    args = tuple(
+                        self._slice_transpose(a, t.dims, d)
+                        for a, t, d in zip(args, node.type.ret.args, transposed_arg_dims)
+                    )
+                    return jax.lax.scan(wrapped_f, init, args)[0]
 
                 return apply
 
