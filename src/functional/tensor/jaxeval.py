@@ -31,6 +31,20 @@ register_pytree_node(
 )
 
 
+def masked_value(dtype):
+    if dtype.kind == "f":
+        return np.nan
+    if dtype.kind == "i":
+        return -(2 ** (dtype.itemsize * 8 - 1))
+    raise NotImplementedError()
+
+
+def mask(x):
+    if x.dtype.kind == "f":
+        return ~jnp.isnan(x)
+    return x != masked_value(x.dtype)
+
+
 class JaxEvaluator(eve.NodeTranslator):
     def visit_SymRef(self, node, *, syms, **kwargs):
         return syms[node.id], node.type
@@ -144,8 +158,12 @@ class JaxEvaluator(eve.NodeTranslator):
                             slices = tuple(
                                 indices if d.name == nb_dim else slice(None) for d in dims
                             )
+                            mask_slices = tuple(
+                                slice(None) if d.name == nb_dim else np.newaxis for d in dims
+                            )
+                            mask = (indices == -1)[mask_slices]
+                            x = jnp.where(mask, masked_value(x.dtype), x[slices])
                             dims = tuple(dim_type.dims[0] if d.name == nb_dim else d for d in dims)
-                            x = x[slices]
                         else:
                             # partial unstructured shift
                             dim, dim_type = offset, offset_type
@@ -158,21 +176,25 @@ class JaxEvaluator(eve.NodeTranslator):
                             while f"_NB_{idx}" in {d.name for d in dims}:
                                 idx += 1
                             new_dims = []
+                            mask_slices = []
                             for dim in dims:
                                 if dim.name == nb_dim:
-                                    new_dims.append(dim_type.dims[0])
-                                    new_dims.append(
+                                    new_dims += [
+                                        dim_type.dims[0],
                                         ir.Dim(
                                             name=f"_NB_{idx}",
                                             start=dim_type.dims[1].start,
                                             stop=dim_type.dims[1].stop,
-                                        )
-                                    )
+                                        ),
+                                    ]
+                                    mask_slices += [slice(None), slice(None)]
                                 else:
                                     new_dims.append(dim)
+                                    mask_slices.append(np.newaxis)
+                            mask = (indices == -1)[tuple(mask_slices)]
+                            x = jnp.where(mask, masked_value(x.dtype), x[slices])
                             dims = tuple(new_dims)
-                            x = x[slices]
-                    assert dims == node.type.ret.ret.dims
+                    assert [d.name for d in dims] == [d.name for d in node.type.ret.ret.dims]
 
                     return x
 
@@ -201,7 +223,7 @@ class JaxEvaluator(eve.NodeTranslator):
         if node.name == "can_deref":
 
             def fun(x):  # type: ignore
-                return ~jnp.isnan(x)
+                return mask(x)
 
             return fun, node.type
 
@@ -253,7 +275,7 @@ class JaxEvaluator(eve.NodeTranslator):
 
             def fun(f, init):  # type: ignore
                 def wrapped_f(carry, args):
-                    res = f(carry, *args)
+                    res = jnp.where(mask(args[0]), f(carry, *args), carry)
                     return (res, res)
 
                 def apply(*args):
