@@ -15,6 +15,10 @@ from functional.tensor import ir
 class IndexField:
     axis: str
 
+    @property
+    def dtype(self):
+        return np.dtype("int64")
+
     def __getitem__(self, indices):
         (indices,) = indices
         if isinstance(indices, slice):
