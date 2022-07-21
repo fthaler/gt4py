@@ -149,10 +149,10 @@ def test_can_deref(fencil_processor, stencil):
 
     Node = CartesianAxis("Node")
 
-    inp = np_as_located_field(Node)(np.ones((1,)))
-    out = np_as_located_field(Node)(np.asarray([0]))
+    inp = np_as_located_field(Node)(np.array([1]))
+    out = np_as_located_field(Node)(np.array([0]))
 
-    no_neighbor_tbl = NeighborTableOffsetProvider(np.array([[None]]), Node, Node, 1)
+    no_neighbor_tbl = NeighborTableOffsetProvider(np.array([[-1]]), Node, Node, 1)
     run_processor(
         stencil[{Node: range(1)}],
         fencil_processor,
@@ -162,7 +162,7 @@ def test_can_deref(fencil_processor, stencil):
     )
 
     if validate:
-        assert np.allclose(np.asarray(out), -1.0)
+        assert np.allclose(np.asarray(out), -1)
 
     a_neighbor_tbl = NeighborTableOffsetProvider(np.array([[0]]), Node, Node, 1)
     run_processor(

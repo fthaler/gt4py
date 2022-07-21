@@ -362,7 +362,7 @@ def test_nabla_sign(fencil_processor, use_tmps):
     setup = nabla_setup()
 
     # sign = np_as_located_field(Vertex, V2E)(setup.sign_field)
-    is_pole_edge = np_as_located_field(Edge)(setup.is_pole_edge_field)
+    is_pole_edge = np_as_located_field(Edge)(setup.is_pole_edge_field.astype("bool"))
     pp = np_as_located_field(Vertex)(setup.input_field)
     S_MXX, S_MYY = tuple(map(np_as_located_field(Edge), setup.S_fields))
     vol = np_as_located_field(Vertex)(setup.vol_field)
