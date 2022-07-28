@@ -336,12 +336,11 @@ def execute_shift(
         assert offset_implementation.origin_axis.value in pos
         new_pos = pos.copy()
         new_pos.pop(offset_implementation.origin_axis.value)
-        if offset_implementation.tbl[pos[offset_implementation.origin_axis.value], index] is None:
+        tbl_entry = offset_implementation.tbl[pos[offset_implementation.origin_axis.value], index]
+        if tbl_entry is None or tbl_entry < 0:
             return None
         else:
-            new_pos[offset_implementation.neighbor_axis.value] = int(
-                offset_implementation.tbl[pos[offset_implementation.origin_axis.value], index]
-            )
+            new_pos[offset_implementation.neighbor_axis.value] = int(tbl_entry)
         return new_pos
 
     raise AssertionError("Unknown object in `offset_provider`")
