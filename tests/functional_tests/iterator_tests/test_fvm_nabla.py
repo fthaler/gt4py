@@ -357,8 +357,11 @@ def nabla_sign(n_nodes, out_MXX, out_MYY, pp, S_MXX, S_MYY, vol, node_index, is_
 def test_nabla_sign(fencil_processor, use_tmps):
     if use_tmps:
         pytest.xfail("use_tmps currently only supported for cartesian")
-
     fencil_processor, validate = fencil_processor
+    from functional.fencil_processors import tensor
+
+    if fencil_processor == tensor.run:
+        pytest.xfail("currently not supported in tensor IR")
     setup = nabla_setup()
 
     # sign = np_as_located_field(Vertex, V2E)(setup.sign_field)
