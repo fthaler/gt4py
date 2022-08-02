@@ -106,6 +106,34 @@ class JaxEvaluator(eve.NodeTranslator):
             "and_": operator.and_,
             "or_": operator.or_,
             "not_": operator.inv,
+            "abs": jnp.abs,
+            "minimum": jnp.minimum,
+            "maximum": jnp.maximum,
+            "fmod": jnp.fmod,
+            "power": jnp.power,
+            "sin": jnp.sin,
+            "cos": jnp.cos,
+            "tan": jnp.tan,
+            "arcsin": jnp.arcsin,
+            "arccos": jnp.arccos,
+            "arctan": jnp.arctan,
+            "arctan2": jnp.arctan2,
+            "sinh": jnp.sinh,
+            "cosh": jnp.cosh,
+            "tanh": jnp.tanh,
+            "arcsinh": jnp.arcsinh,
+            "arccosh": jnp.arccosh,
+            "arctanh": jnp.arctanh,
+            "sqrt": jnp.sqrt,
+            "exp": jnp.exp,
+            "log": jnp.log,
+            "cbrt": jnp.cbrt,
+            "isfinite": jnp.isfinite,
+            "isinf": jnp.isinf,
+            "isnan": jnp.isnan,
+            "floor": jnp.floor,
+            "ceil": jnp.ceil,
+            "trunc": jnp.trunc,
         }
         if node.name in (
             "minus",
@@ -117,6 +145,10 @@ class JaxEvaluator(eve.NodeTranslator):
             "eq",
             "and_",
             "or_",
+            "minimum",
+            "maximum",
+            "fmod",
+            "power",
         ):
 
             def fun(x, y):
@@ -125,7 +157,33 @@ class JaxEvaluator(eve.NodeTranslator):
                 return ops[node.name](x, y)
 
             return fun, node.type
-        if node.name == "not_":
+        if node.name in (
+            "not_",
+            "abs",
+            "sin",
+            "cos",
+            "tan",
+            "arcsin",
+            "arccos",
+            "arctan",
+            "arctan2",
+            "sinh",
+            "cosh",
+            "tanh",
+            "arcsinh",
+            "arccosh",
+            "arctanh",
+            "sqrt",
+            "exp",
+            "log",
+            "cbrt",
+            "isfinite",
+            "isinf",
+            "isnan",
+            "floor",
+            "ceil",
+            "trunc",
+        ):
 
             def fun(x):  # type: ignore
                 x = self._slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
@@ -365,11 +423,34 @@ class JaxEvaluator(eve.NodeTranslator):
         return np.asarray(expr)
 
     @classmethod
+    def _none_axes_to_tuple(cls, array, axes):
+        assert array.ndim == len(axes)
+        if None not in axes:
+            return array
+
+        tuple_axis = axes.index(None)
+        remaining_axes = list(axes)
+        del remaining_axes[tuple_axis]
+
+        def slices(i):
+            slices = [slice(None)] * array.ndim
+            slices[tuple_axis] = i
+            return tuple(slices)
+
+        return tuple(
+            cls._none_axes_to_tuple(array[slices(i)], remaining_axes)
+            for i in range(array.shape[tuple_axis])
+        )
+
+    @classmethod
     def _assign(cls, dst, src):
         if isinstance(dst, tuple):
             assert isinstance(src, tuple)
             for d, s in zip(dst, src):
                 cls._assign(d, s)
+        elif isinstance(dst, embedded.LocatedFieldImpl) and None in dst.axes:
+            dst = cls._none_axes_to_tuple(np.asarray(dst), dst.axes)
+            cls._assign(dst, src)
         else:
             dst_array = np.asarray(dst)
             if dst_array.dtype.names:
@@ -377,11 +458,20 @@ class JaxEvaluator(eve.NodeTranslator):
             else:
                 dst_array[...] = src
 
+    @classmethod
+    def _unpack_dst(cls, argmap, node):
+        if isinstance(node, ir.FunCall):
+            assert isinstance(node.fun, ir.Builtin) and node.fun.name == "make_tuple"
+            return tuple(cls._unpack_dst(argmap, arg) for arg in node.args)
+        return argmap[node.id]
+
     def visit_StencilClosure(self, node, argmap, **kwargs):
         fun = ir.FunCall(fun=node.stencil, args=node.inputs, type=node.output.type)
         out, outtype = self.visit(fun, jit=True, **kwargs)
 
-        self._assign(argmap[node.output.id], self._to_numpy(out))
+        src = self._to_numpy(out)
+        dst = self._unpack_dst(argmap, node.output)
+        self._assign(dst, src)
 
     @classmethod
     def _to_jax(cls, expr):
@@ -389,6 +479,9 @@ class JaxEvaluator(eve.NodeTranslator):
             return tuple(cls._to_jax(e) for e in expr)
         if isinstance(expr, embedded.IndexField):
             return IndexField(axis=expr.axis.value)
+        if isinstance(expr, embedded.LocatedFieldImpl) and None in expr.axes:
+            return cls._to_jax(cls._none_axes_to_tuple(np.asarray(expr), expr.axes))
+
         expr = np.asarray(expr)
         if expr.dtype.names:
             return tuple(cls._to_jax(expr[n]) for n in expr.dtype.names)

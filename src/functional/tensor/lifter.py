@@ -124,7 +124,18 @@ class Lifter(eve.NodeTranslator):
                     type=teir.FunctionType(args=(args[0].type,), ret=ret),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
-            if node.fun.id in ("multiplies", "plus", "minus", "divides", "and_", "or_"):
+            if node.fun.id in (
+                "multiplies",
+                "plus",
+                "minus",
+                "divides",
+                "and_",
+                "or_",
+                "minimum",
+                "maximum",
+                "fmod",
+                "power",
+            ):
                 ret = common_tensor_type(arg.type for arg in args)
                 fun = teir.Builtin(
                     name=node.fun.id,
@@ -139,7 +150,34 @@ class Lifter(eve.NodeTranslator):
                     type=teir.FunctionType(args=tuple(arg.type for arg in args), ret=ret),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
-            if node.fun.id == "not_":
+            if node.fun.id in (
+                "not_",
+                "abs",
+                "sin",
+                "cos",
+                "tan",
+                "arcsin",
+                "arccos",
+                "arctan",
+                "arctan2",
+                "sinh",
+                "cosh",
+                "tanh",
+                "arcsinh",
+                "arccosh",
+                "arctanh",
+                "sqrt",
+                "exp",
+                "log",
+                "gamma",
+                "cbrt",
+                "isfinite",
+                "isinf",
+                "isnan",
+                "floor",
+                "ceil",
+                "trunc",
+            ):
                 fun = teir.Builtin(
                     name=node.fun.id,
                     type=teir.FunctionType(args=tuple(arg.type for arg in args), ret=args[0].type),
@@ -382,15 +420,27 @@ class Lifter(eve.NodeTranslator):
         def get_type(x):
             if isinstance(x, embedded.LocatedFieldImpl):
                 shape = x.array().shape
+                preshift_idx = -1
+
+                def preshift_dim():
+                    nonlocal preshift_idx
+                    preshift_idx += 1
+                    return f"_NB_{preshift_idx}"
+
                 dims = tuple(
                     teir.Dim(
-                        name="_NB_0" if d.value in offset_provider else d.value,
+                        name=preshift_dim() if d.value in offset_provider else d.value,
                         start=-o,
                         stop=s + -o,
                     )
                     for d, o, s in zip(x.axes, x.offsets, shape)
+                    if d is not None
                 )
-                return teir.TensorType(dims=dims, dtype=get_dtype(x.array().dtype))
+                dtype = get_dtype(x.array().dtype)
+                tuple_dims = [s for d, s in zip(x.axes, shape) if d is None]
+                for s in tuple_dims:
+                    dtype = teir.TupleDType(elems=(dtype,) * s)
+                return teir.TensorType(dims=dims, dtype=dtype)
             if isinstance(x, embedded.IndexField):
                 return teir.TensorType(
                     dims=(teir.Dim(name=x.axis.value, start=-1000000000, stop=1000000000),),

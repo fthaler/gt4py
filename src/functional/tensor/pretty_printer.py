@@ -126,7 +126,7 @@ class PrettyPrinter(NodeTranslator):
         return [node.id]
 
     def visit_ScalarDType(self, node: ir.ScalarDType, *, prec: int) -> list[str]:
-        return [node.name]
+        return [f"{node.name}{node.bits}"]
 
     def visit_TupleDType(self, node: ir.TupleDType, *, prec: int) -> list[str]:
         return self._hmerge(["("], *self._hinterleave(self.visit(node.elems, prec=0), ", "), [")"])
