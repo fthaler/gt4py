@@ -160,6 +160,52 @@ def _to_jax(expr):
     return jnp.asarray(expr)
 
 
+_BUILTINS = {
+    # unary ops
+    "minimum": jnp.minimum,
+    "maximum": jnp.maximum,
+    "not_": operator.inv,
+    "abs": jnp.abs,
+    "fmod": jnp.fmod,
+    "sin": jnp.sin,
+    "cos": jnp.cos,
+    "tan": jnp.tan,
+    "arcsin": jnp.arcsin,
+    "arccos": jnp.arccos,
+    "arctan": jnp.arctan,
+    "arctan2": jnp.arctan2,
+    "sinh": jnp.sinh,
+    "cosh": jnp.cosh,
+    "tanh": jnp.tanh,
+    "arcsinh": jnp.arcsinh,
+    "arccosh": jnp.arccosh,
+    "arctanh": jnp.arctanh,
+    "sqrt": jnp.sqrt,
+    "exp": jnp.exp,
+    "log": jnp.log,
+    "cbrt": jnp.cbrt,
+    "isfinite": jnp.isfinite,
+    "isinf": jnp.isinf,
+    "isnan": jnp.isnan,
+    "floor": jnp.floor,
+    "ceil": jnp.ceil,
+    "trunc": jnp.trunc,
+    # binary ops
+    "minus": operator.sub,
+    "plus": operator.add,
+    "multiplies": operator.mul,
+    "divides": operator.truediv,
+    "greater": operator.gt,
+    "less": operator.lt,
+    "eq": operator.eq,
+    "and_": operator.and_,
+    "or_": operator.or_,
+    "power": jnp.power,
+    # ternary ops
+    "if_": jnp.where,
+}
+
+
 class JaxEvaluator(eve.NodeTranslator):
     def visit_SymRef(self, node, *, syms, **kwargs):
         return syms[node.id], node.type
@@ -182,108 +228,14 @@ class JaxEvaluator(eve.NodeTranslator):
         return node.value, node.type
 
     def visit_Builtin(self, node, **kwargs):  # noqa: C901
-        ops = {
-            "minus": operator.sub,
-            "plus": operator.add,
-            "multiplies": operator.mul,
-            "divides": operator.truediv,
-            "greater": operator.gt,
-            "less": operator.lt,
-            "eq": operator.eq,
-            "and_": operator.and_,
-            "or_": operator.or_,
-            "not_": operator.inv,
-            "abs": jnp.abs,
-            "minimum": jnp.minimum,
-            "maximum": jnp.maximum,
-            "fmod": jnp.fmod,
-            "power": jnp.power,
-            "sin": jnp.sin,
-            "cos": jnp.cos,
-            "tan": jnp.tan,
-            "arcsin": jnp.arcsin,
-            "arccos": jnp.arccos,
-            "arctan": jnp.arctan,
-            "arctan2": jnp.arctan2,
-            "sinh": jnp.sinh,
-            "cosh": jnp.cosh,
-            "tanh": jnp.tanh,
-            "arcsinh": jnp.arcsinh,
-            "arccosh": jnp.arccosh,
-            "arctanh": jnp.arctanh,
-            "sqrt": jnp.sqrt,
-            "exp": jnp.exp,
-            "log": jnp.log,
-            "cbrt": jnp.cbrt,
-            "isfinite": jnp.isfinite,
-            "isinf": jnp.isinf,
-            "isnan": jnp.isnan,
-            "floor": jnp.floor,
-            "ceil": jnp.ceil,
-            "trunc": jnp.trunc,
-        }
-        if node.name in (
-            "minus",
-            "plus",
-            "multiplies",
-            "divides",
-            "greater",
-            "less",
-            "eq",
-            "and_",
-            "or_",
-            "minimum",
-            "maximum",
-            "fmod",
-            "power",
-        ):
+        if node.name in _BUILTINS:
 
-            def fun(x, y):
-                x = _slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
-                y = _slice_transpose(y, node.type.args[1].dims, node.type.ret.dims)
-                return ops[node.name](x, y)
-
-            return fun, node.type
-        if node.name in (
-            "not_",
-            "abs",
-            "sin",
-            "cos",
-            "tan",
-            "arcsin",
-            "arccos",
-            "arctan",
-            "arctan2",
-            "sinh",
-            "cosh",
-            "tanh",
-            "arcsinh",
-            "arccosh",
-            "arctanh",
-            "sqrt",
-            "exp",
-            "log",
-            "cbrt",
-            "isfinite",
-            "isinf",
-            "isnan",
-            "floor",
-            "ceil",
-            "trunc",
-        ):
-
-            def fun(x):  # type: ignore
-                x = _slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
-                return ops[node.name](x)
-
-            return fun, node.type
-        if node.name == "if_":
-
-            def fun(x, y, z):  # type: ignore
-                x = _slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
-                y = _slice_transpose(y, node.type.args[1].dims, node.type.ret.dims)
-                z = _slice_transpose(z, node.type.args[2].dims, node.type.ret.dims)
-                return jnp.where(x, y, z)
+            def fun(*args):
+                st_args = (
+                    _slice_transpose(arg, arg_type.dims, node.type.ret.dims)
+                    for arg, arg_type in zip(args, node.type.args)
+                )
+                return _BUILTINS[node.name](*st_args)
 
             return fun, node.type
         if node.name == "shift":
