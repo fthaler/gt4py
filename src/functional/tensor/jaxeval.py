@@ -448,22 +448,39 @@ class JaxEvaluator(eve.NodeTranslator):
             assert isinstance(src, tuple)
             for d, s in zip(dst, src):
                 cls._assign(d, s)
-        elif isinstance(dst, embedded.LocatedFieldImpl) and None in dst.axes:
-            dst = cls._none_axes_to_tuple(np.asarray(dst), dst.axes)
-            cls._assign(dst, src)
         else:
-            dst_array = np.asarray(dst)
-            if dst_array.dtype.names:
-                cls._assign(tuple(dst_array[n] for n in dst_array.dtype.names), src)
-            else:
-                dst_array[...] = src
+            dst[...] = src
+
+    @classmethod
+    def _unpack_dst_tuple(cls, dst):
+        if isinstance(dst, embedded.LocatedFieldImpl) and None in dst.axes:
+            return cls._none_axes_to_tuple(np.asarray(dst), dst.axes)
+        if isinstance(dst, tuple):
+            return tuple(cls._unpack_dst_tuple(d) for d in dst)
+        dst_array = np.asarray(dst)
+        if dst_array.dtype.names:
+            return tuple(dst_array[n] for n in dst_array.dtype.names)
+        return dst_array
 
     @classmethod
     def _unpack_dst(cls, argmap, node):
         if isinstance(node, ir.FunCall):
-            assert isinstance(node.fun, ir.Builtin) and node.fun.name == "make_tuple"
+            assert isinstance(node.fun, ir.Builtin)
+            if node.fun.name == "subset":
+                slices = tuple(
+                    slice(sd.start - d.start, sd.stop)
+                    for sd, d in zip(node.type.dims, node.args[0].type.dims)
+                )
+
+                def apply_slice(value):
+                    if isinstance(value, tuple):
+                        return tuple(apply_slice(v) for v in value)
+                    return value[slices]
+
+                return apply_slice(cls._unpack_dst(argmap, node.args[0]))
+            assert node.fun.name == "make_tuple"
             return tuple(cls._unpack_dst(argmap, arg) for arg in node.args)
-        return argmap[node.id]
+        return cls._unpack_dst_tuple(argmap[node.id])
 
     def visit_StencilClosure(self, node, argmap, **kwargs):
         fun = ir.FunCall(fun=node.stencil, args=node.inputs, type=node.output.type)

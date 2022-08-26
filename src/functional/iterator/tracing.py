@@ -148,7 +148,7 @@ def make_node(o):
         return list(make_node(arg) for arg in o)
     if o is None:
         return NoneLiteral()
-    if isinstance(o, iterator.runtime.FundefDispatcher):
+    if hasattr(o, "fun"):
         return SymRef(id=o.fun.__name__)
     raise NotImplementedError(f"Cannot handle {o}")
 
@@ -269,6 +269,3 @@ def trace(fun, args):
 
 def fendef_tracing(fun, *args, **kwargs) -> FencilDefinition:
     return trace(fun, args=args)
-
-
-iterator.runtime.fendef_codegen = fendef_tracing

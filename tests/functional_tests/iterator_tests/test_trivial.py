@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from functional.common import Dimension
+from functional.common import Dimension, DimensionKind
 from functional.fencil_processors.runners.gtfn_cpu import run_gtfn
 from functional.iterator.builtins import *
 from functional.iterator.embedded import np_as_located_field
@@ -12,9 +12,11 @@ from .conftest import run_processor
 
 I = offset("I")
 J = offset("J")
+K = offset("K")
 
 IDim = Dimension("IDim")
 JDim = Dimension("JDim")
+KDim = Dimension("KDim", kind=DimensionKind.VERTICAL)
 
 
 @fundef
@@ -32,7 +34,7 @@ def baz(baz_inp):
     return deref(lift(bar)(baz_inp))
 
 
-def test_trivial(fencil_processor, use_tmps):
+def test_trivial(fencil_processor, lift_mode):
     fencil_processor, validate = fencil_processor
 
     if fencil_processor == run_gtfn:
@@ -51,7 +53,7 @@ def test_trivial(fencil_processor, use_tmps):
         fencil_processor,
         inp_s,
         out=out_s,
-        use_tmps=use_tmps,
+        lift_mode=lift_mode,
         offset_provider={"I": IDim, "J": JDim},
     )
 
@@ -72,7 +74,7 @@ def fen_direct_deref(i_size, j_size, out, inp):
     )
 
 
-def test_direct_deref(fencil_processor, use_tmps):
+def test_direct_deref(fencil_processor, lift_mode):
     fencil_processor, validate = fencil_processor
     if fencil_processor == run_gtfn:
         pytest.xfail("extract_fundefs_from_closures() doesn't work for builtins in gtfn")
@@ -90,9 +92,39 @@ def test_direct_deref(fencil_processor, use_tmps):
         *out.shape,
         out_s,
         inp_s,
-        use_tmps=use_tmps,
+        lift_mode=lift_mode,
         offset_provider=dict(),
     )
 
     if validate:
         assert np.allclose(out, out_s)
+
+
+@fundef
+def vertical_shift(inp):
+    return deref(shift(K, 1)(inp))
+
+
+def test_vertical_shift_unstructured(fencil_processor):
+    fencil_processor, validate = fencil_processor
+
+    k_size = 7
+
+    rng = np.random.default_rng()
+    inp = rng.uniform(size=(1, k_size))
+
+    inp_s = np_as_located_field(IDim, KDim)(inp)
+    out_s = np_as_located_field(IDim, KDim)(np.zeros_like(inp))
+
+    run_processor(
+        vertical_shift[
+            unstructured_domain(named_range(IDim, 0, 1), named_range(KDim, 0, k_size - 1))
+        ],
+        fencil_processor,
+        inp_s,
+        out=out_s,
+        offset_provider={"K": KDim},
+    )
+
+    if validate:
+        assert np.allclose(inp_s[:, 1:], np.asarray(out_s)[:, :-1])

@@ -96,7 +96,7 @@ class FunCall(Expr):
 class StencilClosure(Node):
     stencil: Expr
     output: Union[SymRef, FunCall]
-    inputs: tuple[SymRef, ...]
+    inputs: tuple[Union[SymRef, FunCall], ...]
 
 
 BUILTINS = {

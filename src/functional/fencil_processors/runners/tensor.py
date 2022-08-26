@@ -1,6 +1,6 @@
 from functional.common import Dimension
+from functional.fencil_processors.processor_interface import fencil_executor
 from functional.iterator import ir as itir
-from functional.iterator.processor_interface import fencil_executor
 from functional.iterator.transforms.constant_propagation import ConstantPropagation
 from functional.iterator.transforms.pass_manager import apply_common_transforms
 from functional.iterator.transforms.remap_symbols import RemapSymbolRefs
@@ -46,7 +46,7 @@ def _inline_domain(root, args):
 
 @fencil_executor
 def run(root, *args, **kwargs):
-    root = apply_common_transforms(root)
+    root = apply_common_transforms(root, common_subexpression_elimination=False)
 
     constants = {
         p.id: itir.Literal(value=str(a), type=type(a).__name__)

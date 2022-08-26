@@ -40,7 +40,7 @@ class AtlasTable:
 
     @property
     def shape(self):
-        return self.atlas_connectivity.rows, self.atlas_connectivity.maxcols
+        return (self.atlas_connectivity.rows, self.atlas_connectivity.maxcols)
 
     @property
     def dtype(self):

@@ -319,10 +319,17 @@ class Lifter(eve.NodeTranslator):
                 teir.TensorType(dims=remove_reduction_dim(a.type.dims), dtype=a.type.dtype)
                 for a in args
             ]
-            red_fun_symtypes = symtypes | {
-                p.id: t for p, t in zip(red_fun.params, red_fun_argtypes)
-            }
-            red_fun = self.visit(red_fun, symtypes=symtypes | red_fun_symtypes, **kwargs)
+            if isinstance(red_fun, itir.Lambda):
+                red_fun_symtypes = symtypes | {
+                    p.id: t for p, t in zip(red_fun.params, red_fun_argtypes)
+                }
+                red_fun = self.visit(red_fun, symtypes=symtypes | red_fun_symtypes, **kwargs)
+            else:
+                assert isinstance(red_fun, itir.SymRef) and red_fun.id in ("plus", "multiplies")
+                red_fun = teir.Builtin(
+                    name=red_fun.id,
+                    type=teir.FunctionType(args=tuple(red_fun_argtypes), ret=init.type),
+                )
             funtype = teir.FunctionType(args=tuple(a.type for a in args), ret=ret)
             red_args = (red_fun, init)
             red = teir.Builtin(
@@ -343,42 +350,78 @@ class Lifter(eve.NodeTranslator):
             expr=expr,
         )
 
-    @staticmethod
-    def _subset(node, src_dims, dst_dims):
-        assert set(s.name for s in src_dims) == set(d.name for d in dst_dims)
-        relative_offsets = dict()
-        key = operator.attrgetter("name")
-        for s, d in zip(sorted(src_dims, key=key), sorted(dst_dims, key=key)):
-            start_offset = d.start - s.start
-            stop_offset = d.stop - s.stop
-            assert start_offset >= 0 and stop_offset <= 0
-            relative_offsets[s.name] = start_offset, stop_offset
-
-        def update_dim(d):
-            start_offset, stop_offset = relative_offsets.get(d.name, (0, 0))
-            if start_offset == stop_offset == 0:
-                return d
-            return teir.Dim(name=d.name, start=d.start + start_offset, stop=d.stop + stop_offset)
-
-        assert isinstance(node.type, teir.TensorType)
-        dims = tuple(update_dim(d) for d in node.type.dims)
-        ret = teir.TensorType(dtype=node.type.dtype, dims=dims)
-        funtype = teir.FunctionType(args=(node.type,), ret=ret)
-        subset = teir.Builtin(name="subset", type=funtype)
-        return teir.FunCall(type=funtype.ret, fun=subset, args=(node,))
+    @classmethod
+    def _domain_dims(cls, domain):
+        assert isinstance(domain, itir.FunCall)
+        dims = []
+        for named_range in domain.args:
+            assert isinstance(named_range, itir.FunCall) and named_range.fun == itir.SymRef(
+                id="named_range"
+            )
+            axis, start, stop = named_range.args
+            assert isinstance(axis, itir.AxisLiteral)
+            assert isinstance(start, itir.Literal)
+            assert isinstance(stop, itir.Literal)
+            dims.append(teir.Dim(name=axis.value, start=int(start.value), stop=int(stop.value)))
+        return tuple(dims)
 
     @classmethod
-    def _subset_result(cls, fun, dst_dims):
-        called = teir.FunCall(
-            type=fun.type.ret,
-            fun=fun,
-            args=tuple(teir.SymRef(type=p.type, id=p.id) for p in fun.params),
+    def _dim_offsets(cls, dims, reference_dims):
+        offsets = dict()
+        assert len(dims) == len(reference_dims)
+        key = operator.attrgetter("name")
+        for dd, rd in zip(sorted(dims, key=key), sorted(reference_dims, key=key)):
+            assert dd.name == rd.name
+            start_offset = dd.start - rd.start
+            stop_offset = dd.stop - rd.stop
+            assert start_offset >= 0 and stop_offset <= 0
+            if start_offset != 0 or stop_offset != 0:
+                offsets[dd.name] = start_offset, stop_offset
+        return offsets
+
+    @staticmethod
+    def _offset_dims(dims, offsets):
+        new_dims = []
+        for dim in dims:
+            if dim.name not in offsets:
+                new_dims.append(dim)
+            else:
+                start, stop = offsets[dim.name]
+                new_dims.append(
+                    teir.Dim(name=dim.name, start=dim.start + start, stop=dim.stop + stop)
+                )
+        return tuple(new_dims)
+
+    @classmethod
+    def _subset(cls, node, offsets):
+        assert isinstance(node.type, teir.TensorType)
+        new_dims = cls._offset_dims(node.type.dims, offsets)
+        if new_dims == node.type.dims:
+            return node
+        if isinstance(node, teir.FunCall) and node.fun == teir.Builtin(name="subset"):
+            arg = node.args[0]
+        else:
+            arg = node
+        ret = teir.TensorType(dims=new_dims, dtype=node.type.dtype)
+        return teir.FunCall(
+            fun=teir.Builtin(name="subset", type=teir.FunctionType(args=(arg.type,), ret=ret)),
+            args=(arg,),
+            type=ret,
         )
-        subset = cls._subset(called, fun.type.ret.dims, dst_dims)
-        return teir.Lambda(
-            type=teir.FunctionType(args=fun.type.args, ret=subset.type),
-            params=fun.params,
-            expr=subset,
+
+    @classmethod
+    def _subset_closure(cls, closure, stencil_offsets, output_offsets):
+        class Subsetter(eve.NodeTranslator):
+            def visit_TensorType(self, node: teir.TensorType):
+                dims = cls._offset_dims(node.dims, stencil_offsets)
+                if dims == node.dims:
+                    return node
+                return teir.TensorType(dims=dims, dtype=node.dtype)
+
+        return teir.StencilClosure(
+            stencil=Subsetter().visit(closure.stencil),
+            output=cls._subset(closure.output, output_offsets),
+            inputs=tuple(cls._subset(inp, stencil_offsets) for inp in closure.inputs),
         )
 
     def visit_StencilClosure(self, node, **kwargs):
@@ -397,9 +440,13 @@ class Lifter(eve.NodeTranslator):
                 ),
             )
         stencil = call.fun
-        if output.type != stencil.type.ret:
-            stencil = self._subset_result(stencil, output.type.dims)
-        return teir.StencilClosure(stencil=stencil, output=output, inputs=inputs)
+        closure = teir.StencilClosure(stencil=stencil, output=output, inputs=inputs)
+        domain_dims = self._domain_dims(node.domain)
+        stencil_offsets = self._dim_offsets(domain_dims, stencil.type.ret.dims)
+        output_offsets = self._dim_offsets(domain_dims, output.type.dims)
+        if stencil_offsets or output_offsets:
+            closure = self._subset_closure(closure, stencil_offsets, output_offsets)
+        return closure
 
     def visit_FencilDefinition(self, node, *, args, offset_provider, column_axis):
         assert not node.function_definitions
