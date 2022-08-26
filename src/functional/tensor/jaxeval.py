@@ -36,7 +36,7 @@ register_pytree_node(
 )
 
 
-def masked_value(dtype):
+def _masked_value(dtype):
     if dtype.kind == "f":
         return np.nan
     if dtype.kind == "i":
@@ -44,10 +44,113 @@ def masked_value(dtype):
     raise NotImplementedError()
 
 
-def mask(x):
+def _mask(x):
     if x.dtype.kind == "f":
         return ~jnp.isnan(x)
-    return x != masked_value(x.dtype)
+    return x != _masked_value(x.dtype)
+
+
+def _slice_transpose(array, src_dims, dst_dims):
+    if isinstance(array, tuple):
+        return tuple(_slice_transpose(a, src_dims, dst_dims) for a in array)
+    dst_dims_dict = {d.name: (d.start, d.stop) for d in dst_dims}
+    slices = tuple(
+        slice((d := dst_dims_dict[s.name])[0] - s.start, d[1] - s.start) for s in src_dims
+    )
+    src_names = [s.name for s in src_dims]
+    axes = []
+    expanded_slices = []
+    for d in dst_dims:
+        if d.name in src_names:
+            axes.append(src_names.index(d.name))
+            expanded_slices.append(slice(None))
+        else:
+            expanded_slices.append(jnp.newaxis)
+
+    sliced = array[slices]
+    transposed = sliced.transpose(axes)
+    res = transposed[tuple(expanded_slices)]
+    return res
+
+
+def _to_numpy(expr):
+    if isinstance(expr, tuple):
+        return tuple(_to_numpy(e) for e in expr)
+    return np.asarray(expr)
+
+
+def _none_axes_to_tuple(array, axes):
+    assert array.ndim == len(axes)
+    if None not in axes:
+        return array
+
+    tuple_axis = axes.index(None)
+    remaining_axes = list(axes)
+    del remaining_axes[tuple_axis]
+
+    def slices(i):
+        slices = [slice(None)] * array.ndim
+        slices[tuple_axis] = i
+        return tuple(slices)
+
+    return tuple(
+        _none_axes_to_tuple(array[slices(i)], remaining_axes)
+        for i in range(array.shape[tuple_axis])
+    )
+
+
+def _assign(dst, src):
+    if isinstance(dst, tuple):
+        assert isinstance(src, tuple)
+        for d, s in zip(dst, src):
+            _assign(d, s)
+    else:
+        dst[...] = src
+
+
+def _unpack_dst_tuple(dst):
+    if isinstance(dst, embedded.LocatedFieldImpl) and None in dst.axes:
+        return _none_axes_to_tuple(np.asarray(dst), dst.axes)
+    if isinstance(dst, tuple):
+        return tuple(_unpack_dst_tuple(d) for d in dst)
+    dst_array = np.asarray(dst)
+    if dst_array.dtype.names:
+        return tuple(dst_array[n] for n in dst_array.dtype.names)
+    return dst_array
+
+
+def _unpack_dst(argmap, node):
+    if isinstance(node, ir.FunCall):
+        assert isinstance(node.fun, ir.Builtin)
+        if node.fun.name == "subset":
+            slices = tuple(
+                slice(sd.start - d.start, sd.stop)
+                for sd, d in zip(node.type.dims, node.args[0].type.dims)
+            )
+
+            def apply_slice(value):
+                if isinstance(value, tuple):
+                    return tuple(apply_slice(v) for v in value)
+                return value[slices]
+
+            return apply_slice(_unpack_dst(argmap, node.args[0]))
+        assert node.fun.name == "make_tuple"
+        return tuple(_unpack_dst(argmap, arg) for arg in node.args)
+    return _unpack_dst_tuple(argmap[node.id])
+
+
+def _to_jax(expr):
+    if isinstance(expr, tuple):
+        return tuple(_to_jax(e) for e in expr)
+    if isinstance(expr, embedded.IndexField):
+        return IndexField(axis=expr.axis.value)
+    if isinstance(expr, embedded.LocatedFieldImpl) and None in expr.axes:
+        return _to_jax(_none_axes_to_tuple(np.asarray(expr), expr.axes))
+
+    expr = np.asarray(expr)
+    if expr.dtype.names:
+        return tuple(_to_jax(expr[n]) for n in expr.dtype.names)
+    return jnp.asarray(expr)
 
 
 class JaxEvaluator(eve.NodeTranslator):
@@ -70,29 +173,6 @@ class JaxEvaluator(eve.NodeTranslator):
 
     def visit_OffsetLiteral(self, node, **kwargs):
         return node.value, node.type
-
-    @classmethod
-    def _slice_transpose(cls, array, src_dims, dst_dims):
-        if isinstance(array, tuple):
-            return tuple(cls._slice_transpose(a, src_dims, dst_dims) for a in array)
-        dst_dims_dict = {d.name: (d.start, d.stop) for d in dst_dims}
-        slices = tuple(
-            slice((d := dst_dims_dict[s.name])[0] - s.start, d[1] - s.start) for s in src_dims
-        )
-        src_names = [s.name for s in src_dims]
-        axes = []
-        expanded_slices = []
-        for d in dst_dims:
-            if d.name in src_names:
-                axes.append(src_names.index(d.name))
-                expanded_slices.append(slice(None))
-            else:
-                expanded_slices.append(jnp.newaxis)
-
-        sliced = array[slices]
-        transposed = sliced.transpose(axes)
-        res = transposed[tuple(expanded_slices)]
-        return res
 
     def visit_Builtin(self, node, **kwargs):  # noqa: C901
         ops = {
@@ -152,8 +232,8 @@ class JaxEvaluator(eve.NodeTranslator):
         ):
 
             def fun(x, y):
-                x = self._slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
-                y = self._slice_transpose(y, node.type.args[1].dims, node.type.ret.dims)
+                x = _slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
+                y = _slice_transpose(y, node.type.args[1].dims, node.type.ret.dims)
                 return ops[node.name](x, y)
 
             return fun, node.type
@@ -186,16 +266,16 @@ class JaxEvaluator(eve.NodeTranslator):
         ):
 
             def fun(x):  # type: ignore
-                x = self._slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
+                x = _slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
                 return ops[node.name](x)
 
             return fun, node.type
         if node.name == "if_":
 
             def fun(x, y, z):  # type: ignore
-                x = self._slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
-                y = self._slice_transpose(y, node.type.args[1].dims, node.type.ret.dims)
-                z = self._slice_transpose(z, node.type.args[2].dims, node.type.ret.dims)
+                x = _slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
+                y = _slice_transpose(y, node.type.args[1].dims, node.type.ret.dims)
+                z = _slice_transpose(z, node.type.args[2].dims, node.type.ret.dims)
                 return jnp.where(x, y, z)
 
             return fun, node.type
@@ -243,7 +323,7 @@ class JaxEvaluator(eve.NodeTranslator):
                             mask_slices[i] = slice(None)
                             mask_slices[i + 1] = slice(None)
                             mask = (offset == -1)[tuple(mask_slices)]
-                            x = jnp.where(mask, masked_value(x.dtype), x[tuple(slices)])
+                            x = jnp.where(mask, _masked_value(x.dtype), x[tuple(slices)])
 
                     assert dims == [d.name for d in node.type.ret.ret.dims]
 
@@ -270,7 +350,7 @@ class JaxEvaluator(eve.NodeTranslator):
                                 slice(None) if d.name == nb_dim else np.newaxis for d in dims
                             )
                             mask = (indices == -1)[mask_slices]
-                            x = jnp.where(mask, masked_value(x.dtype), x[slices])
+                            x = jnp.where(mask, _masked_value(x.dtype), x[slices])
                             dims = tuple(dim_type.dims[0] if d.name == nb_dim else d for d in dims)
                         else:
                             # partial unstructured shift
@@ -300,7 +380,7 @@ class JaxEvaluator(eve.NodeTranslator):
                                     new_dims.append(dim)
                                     mask_slices.append(np.newaxis)
                             mask = (indices == -1)[tuple(mask_slices)]
-                            x = jnp.where(mask, masked_value(x.dtype), x[slices])
+                            x = jnp.where(mask, _masked_value(x.dtype), x[slices])
                             dims = tuple(new_dims)
                     assert [d.name for d in dims] == [d.name for d in node.type.ret.ret.dims]
 
@@ -324,14 +404,14 @@ class JaxEvaluator(eve.NodeTranslator):
         if node.name == "subset":
 
             def fun(x):  # type: ignore
-                return self._slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
+                return _slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
 
             return fun, node.type
 
         if node.name == "can_deref":
 
             def fun(x):  # type: ignore
-                return mask(x)
+                return _mask(x)
 
             return fun, node.type
 
@@ -355,12 +435,12 @@ class JaxEvaluator(eve.NodeTranslator):
 
                 def apply(*args):
                     args = tuple(
-                        self._slice_transpose(a, t.dims, transposed_dims)
+                        _slice_transpose(a, t.dims, transposed_dims)
                         for a, t in zip(args, node.type.ret.args)
                     )
 
                     res = jax.lax.scan(wrapped_f, init, args, reverse=not forward)[1]
-                    return self._slice_transpose(res, transposed_dims, node.type.ret.ret.dims)
+                    return _slice_transpose(res, transposed_dims, node.type.ret.ret.dims)
 
                 return apply
 
@@ -383,12 +463,12 @@ class JaxEvaluator(eve.NodeTranslator):
 
             def fun(f, init):  # type: ignore
                 def wrapped_f(carry, args):
-                    res = jnp.where(mask(args[0]), f(carry, *args), carry)
+                    res = jnp.where(_mask(args[0]), f(carry, *args), carry)
                     return (res, res)
 
                 def apply(*args):
                     args = tuple(
-                        self._slice_transpose(a, t.dims, d)
+                        _slice_transpose(a, t.dims, d)
                         for a, t, d in zip(args, node.type.ret.args, transposed_arg_dims)
                     )
                     return jax.lax.scan(wrapped_f, init, args)[0]
@@ -416,101 +496,21 @@ class JaxEvaluator(eve.NodeTranslator):
 
         return fun, node.type
 
-    @classmethod
-    def _to_numpy(cls, expr):
-        if isinstance(expr, tuple):
-            return tuple(cls._to_numpy(e) for e in expr)
-        return np.asarray(expr)
-
-    @classmethod
-    def _none_axes_to_tuple(cls, array, axes):
-        assert array.ndim == len(axes)
-        if None not in axes:
-            return array
-
-        tuple_axis = axes.index(None)
-        remaining_axes = list(axes)
-        del remaining_axes[tuple_axis]
-
-        def slices(i):
-            slices = [slice(None)] * array.ndim
-            slices[tuple_axis] = i
-            return tuple(slices)
-
-        return tuple(
-            cls._none_axes_to_tuple(array[slices(i)], remaining_axes)
-            for i in range(array.shape[tuple_axis])
-        )
-
-    @classmethod
-    def _assign(cls, dst, src):
-        if isinstance(dst, tuple):
-            assert isinstance(src, tuple)
-            for d, s in zip(dst, src):
-                cls._assign(d, s)
-        else:
-            dst[...] = src
-
-    @classmethod
-    def _unpack_dst_tuple(cls, dst):
-        if isinstance(dst, embedded.LocatedFieldImpl) and None in dst.axes:
-            return cls._none_axes_to_tuple(np.asarray(dst), dst.axes)
-        if isinstance(dst, tuple):
-            return tuple(cls._unpack_dst_tuple(d) for d in dst)
-        dst_array = np.asarray(dst)
-        if dst_array.dtype.names:
-            return tuple(dst_array[n] for n in dst_array.dtype.names)
-        return dst_array
-
-    @classmethod
-    def _unpack_dst(cls, argmap, node):
-        if isinstance(node, ir.FunCall):
-            assert isinstance(node.fun, ir.Builtin)
-            if node.fun.name == "subset":
-                slices = tuple(
-                    slice(sd.start - d.start, sd.stop)
-                    for sd, d in zip(node.type.dims, node.args[0].type.dims)
-                )
-
-                def apply_slice(value):
-                    if isinstance(value, tuple):
-                        return tuple(apply_slice(v) for v in value)
-                    return value[slices]
-
-                return apply_slice(cls._unpack_dst(argmap, node.args[0]))
-            assert node.fun.name == "make_tuple"
-            return tuple(cls._unpack_dst(argmap, arg) for arg in node.args)
-        return cls._unpack_dst_tuple(argmap[node.id])
-
     def visit_StencilClosure(self, node, argmap, **kwargs):
         fun = ir.FunCall(fun=node.stencil, args=node.inputs, type=node.output.type)
         out, outtype = self.visit(fun, jit=True, **kwargs)
 
-        src = self._to_numpy(out)
-        dst = self._unpack_dst(argmap, node.output)
-        self._assign(dst, src)
-
-    @classmethod
-    def _to_jax(cls, expr):
-        if isinstance(expr, tuple):
-            return tuple(cls._to_jax(e) for e in expr)
-        if isinstance(expr, embedded.IndexField):
-            return IndexField(axis=expr.axis.value)
-        if isinstance(expr, embedded.LocatedFieldImpl) and None in expr.axes:
-            return cls._to_jax(cls._none_axes_to_tuple(np.asarray(expr), expr.axes))
-
-        expr = np.asarray(expr)
-        if expr.dtype.names:
-            return tuple(cls._to_jax(expr[n]) for n in expr.dtype.names)
-        return jnp.asarray(expr)
+        src = _to_numpy(out)
+        dst = _unpack_dst(argmap, node.output)
+        _assign(dst, src)
 
     def visit_Fencil(self, node, *, args, offset_provider):
         argmap = {p.id: a for p, a in zip(node.params, args)}
-        syms = {k: self._to_jax(v) for k, v in argmap.items()}
+        syms = {k: _to_jax(v) for k, v in argmap.items()}
 
         for k, v in offset_provider.items():
             if isinstance(v, embedded.NeighborTableOffsetProvider):
                 assert k not in syms
-                syms[k] = self._to_jax(v.tbl)
+                syms[k] = _to_jax(v.tbl)
 
         self.visit(node.closures, argmap=argmap, syms=syms, offset_provider=offset_provider)

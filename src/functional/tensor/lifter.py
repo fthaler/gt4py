@@ -5,7 +5,7 @@ from functional.iterator import embedded, ir as itir
 from functional.tensor import ir as teir
 
 
-def common_dims(dims_iter):
+def _common_dims(dims_iter):
     dims_dict = dict()
     for dims in dims_iter:
         for d in dims:
@@ -21,14 +21,14 @@ def common_dims(dims_iter):
     )
 
 
-def common_tensor_type(types):
+def _common_tensor_type(types):
     types = list(types)
     assert all(t.dtype == types[0].dtype for t in types)
-    dims = common_dims(t.dims for t in types)
+    dims = _common_dims(t.dims for t in types)
     return teir.TensorType(dims=dims, dtype=types[0].dtype)
 
 
-def neighbor_table_type(provider):
+def _neighbor_table_type(provider):
     assert isinstance(provider, embedded.NeighborTableOffsetProvider)
     dims = (
         teir.Dim(name=provider.origin_axis.value, start=0, stop=provider.tbl.shape[0]),
@@ -39,14 +39,14 @@ def neighbor_table_type(provider):
     )
 
 
-def broadcast(e, t):
+def _broadcast(e, t):
     if (
         isinstance(e, teir.FunCall)
         and isinstance(e.fun, teir.Builtin)
         and e.fun.name == "make_tuple"
     ):
         arg_types = [teir.TensorType(dims=t.dims, dtype=e) for e in t.dtype.elems]
-        args = [broadcast(a, at) for a, at in zip(e.args, arg_types)]
+        args = [_broadcast(a, at) for a, at in zip(e.args, arg_types)]
         return teir.FunCall(
             type=t,
             fun=teir.Builtin(
@@ -67,6 +67,78 @@ def highest_nb_dim(dim_names, add_one=False):
     if not add_one:
         idx -= 1
     return f"_NB_{idx}"
+
+
+def _domain_dims(domain):
+    assert isinstance(domain, itir.FunCall)
+    dims = []
+    for named_range in domain.args:
+        assert isinstance(named_range, itir.FunCall) and named_range.fun == itir.SymRef(
+            id="named_range"
+        )
+        axis, start, stop = named_range.args
+        assert isinstance(axis, itir.AxisLiteral)
+        assert isinstance(start, itir.Literal)
+        assert isinstance(stop, itir.Literal)
+        dims.append(teir.Dim(name=axis.value, start=int(start.value), stop=int(stop.value)))
+    return tuple(dims)
+
+
+def _dim_offsets(dims, reference_dims):
+    offsets = dict()
+    assert len(dims) == len(reference_dims)
+    key = operator.attrgetter("name")
+    for dd, rd in zip(sorted(dims, key=key), sorted(reference_dims, key=key)):
+        assert dd.name == rd.name
+        start_offset = dd.start - rd.start
+        stop_offset = dd.stop - rd.stop
+        assert start_offset >= 0 and stop_offset <= 0
+        if start_offset != 0 or stop_offset != 0:
+            offsets[dd.name] = start_offset, stop_offset
+    return offsets
+
+
+def _offset_dims(dims, offsets):
+    new_dims = []
+    for dim in dims:
+        if dim.name not in offsets:
+            new_dims.append(dim)
+        else:
+            start, stop = offsets[dim.name]
+            new_dims.append(teir.Dim(name=dim.name, start=dim.start + start, stop=dim.stop + stop))
+    return tuple(new_dims)
+
+
+def _subset(node, offsets):
+    assert isinstance(node.type, teir.TensorType)
+    new_dims = _offset_dims(node.type.dims, offsets)
+    if new_dims == node.type.dims:
+        return node
+    if isinstance(node, teir.FunCall) and node.fun == teir.Builtin(name="subset"):
+        arg = node.args[0]
+    else:
+        arg = node
+    ret = teir.TensorType(dims=new_dims, dtype=node.type.dtype)
+    return teir.FunCall(
+        fun=teir.Builtin(name="subset", type=teir.FunctionType(args=(arg.type,), ret=ret)),
+        args=(arg,),
+        type=ret,
+    )
+
+
+def _subset_closure(closure, stencil_offsets, output_offsets):
+    class Subsetter(eve.NodeTranslator):
+        def visit_TensorType(self, node: teir.TensorType):
+            dims = _offset_dims(node.dims, stencil_offsets)
+            if dims == node.dims:
+                return node
+            return teir.TensorType(dims=dims, dtype=node.dtype)
+
+    return teir.StencilClosure(
+        stencil=Subsetter().visit(closure.stencil),
+        output=_subset(closure.output, output_offsets),
+        inputs=tuple(_subset(inp, stencil_offsets) for inp in closure.inputs),
+    )
 
 
 class Lifter(eve.NodeTranslator):
@@ -99,7 +171,7 @@ class Lifter(eve.NodeTranslator):
             (provider := offset_provider.get(node.value)), embedded.NeighborTableOffsetProvider
         ):
             return teir.SymRef(
-                type=neighbor_table_type(provider),
+                type=_neighbor_table_type(provider),
                 id=node.value,
             )
         return teir.OffsetLiteral(type=teir.OffsetType(), value=node.value)
@@ -136,14 +208,14 @@ class Lifter(eve.NodeTranslator):
                 "fmod",
                 "power",
             ):
-                ret = common_tensor_type(arg.type for arg in args)
+                ret = _common_tensor_type(arg.type for arg in args)
                 fun = teir.Builtin(
                     name=node.fun.id,
                     type=teir.FunctionType(args=tuple(arg.type for arg in args), ret=ret),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
             if node.fun.id in ("greater", "less", "eq"):
-                common = common_tensor_type(arg.type for arg in args)
+                common = _common_tensor_type(arg.type for arg in args)
                 ret = teir.TensorType(dims=common.dims, dtype=teir.ScalarDType(name="bool", bits=8))
                 fun = teir.Builtin(
                     name=node.fun.id,
@@ -184,8 +256,8 @@ class Lifter(eve.NodeTranslator):
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
             if node.fun.id == "if_":
-                dims = common_dims(arg.type.dims for arg in args)
-                common = common_tensor_type(arg.type for arg in args[1:])
+                dims = _common_dims(arg.type.dims for arg in args)
+                common = _common_tensor_type(arg.type for arg in args[1:])
                 ret = teir.TensorType(dims=dims, dtype=common.dtype)
                 fun = teir.Builtin(
                     name=node.fun.id,
@@ -193,7 +265,7 @@ class Lifter(eve.NodeTranslator):
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
             if node.fun.id == "make_tuple":
-                dims = common_dims(arg.type.dims for arg in args)
+                dims = _common_dims(arg.type.dims for arg in args)
                 dtype = teir.TupleDType(elems=tuple(arg.type.dtype for arg in args))
                 ret = teir.TensorType(dims=dims, dtype=dtype)
                 fun = teir.Builtin(
@@ -276,7 +348,7 @@ class Lifter(eve.NodeTranslator):
         if isinstance(node.fun, itir.FunCall) and node.fun.fun == itir.SymRef(id="scan"):
             forward = self.visit(node.fun.args[1], symtypes=symtypes, **kwargs)
             init = self.visit(node.fun.args[2], symtypes=symtypes, **kwargs)
-            dims = common_dims([init.type.dims] + [arg.type.dims for arg in args])
+            dims = _common_dims([init.type.dims] + [arg.type.dims for arg in args])
             column_axis = kwargs["column_axis"].value
 
             def type_wo_column(t):
@@ -285,7 +357,7 @@ class Lifter(eve.NodeTranslator):
                 )
 
             ret = teir.TensorType(dims=dims, dtype=init.type.dtype)
-            init = broadcast(init, type_wo_column(ret))
+            init = _broadcast(init, type_wo_column(ret))
             scan_fun = node.fun.args[0]
             scan_fun_argtypes = [init.type] + [type_wo_column(a.type) for a in args]
             scan_fun_symtypes = symtypes | {
@@ -311,9 +383,11 @@ class Lifter(eve.NodeTranslator):
                 return tuple(d for d in dims if d.name != rdim)
 
             init = self.visit(node.fun.args[1], symtypes=symtypes, **kwargs)
-            dims = common_dims([init.type.dims] + [remove_reduction_dim(a.type.dims) for a in args])
+            dims = _common_dims(
+                [init.type.dims] + [remove_reduction_dim(a.type.dims) for a in args]
+            )
             ret = teir.TensorType(dims=dims, dtype=init.type.dtype)
-            init = broadcast(init, ret)
+            init = _broadcast(init, ret)
             red_fun = node.fun.args[0]
             red_fun_argtypes = [init.type] + [
                 teir.TensorType(dims=remove_reduction_dim(a.type.dims), dtype=a.type.dtype)
@@ -350,80 +424,6 @@ class Lifter(eve.NodeTranslator):
             expr=expr,
         )
 
-    @classmethod
-    def _domain_dims(cls, domain):
-        assert isinstance(domain, itir.FunCall)
-        dims = []
-        for named_range in domain.args:
-            assert isinstance(named_range, itir.FunCall) and named_range.fun == itir.SymRef(
-                id="named_range"
-            )
-            axis, start, stop = named_range.args
-            assert isinstance(axis, itir.AxisLiteral)
-            assert isinstance(start, itir.Literal)
-            assert isinstance(stop, itir.Literal)
-            dims.append(teir.Dim(name=axis.value, start=int(start.value), stop=int(stop.value)))
-        return tuple(dims)
-
-    @classmethod
-    def _dim_offsets(cls, dims, reference_dims):
-        offsets = dict()
-        assert len(dims) == len(reference_dims)
-        key = operator.attrgetter("name")
-        for dd, rd in zip(sorted(dims, key=key), sorted(reference_dims, key=key)):
-            assert dd.name == rd.name
-            start_offset = dd.start - rd.start
-            stop_offset = dd.stop - rd.stop
-            assert start_offset >= 0 and stop_offset <= 0
-            if start_offset != 0 or stop_offset != 0:
-                offsets[dd.name] = start_offset, stop_offset
-        return offsets
-
-    @staticmethod
-    def _offset_dims(dims, offsets):
-        new_dims = []
-        for dim in dims:
-            if dim.name not in offsets:
-                new_dims.append(dim)
-            else:
-                start, stop = offsets[dim.name]
-                new_dims.append(
-                    teir.Dim(name=dim.name, start=dim.start + start, stop=dim.stop + stop)
-                )
-        return tuple(new_dims)
-
-    @classmethod
-    def _subset(cls, node, offsets):
-        assert isinstance(node.type, teir.TensorType)
-        new_dims = cls._offset_dims(node.type.dims, offsets)
-        if new_dims == node.type.dims:
-            return node
-        if isinstance(node, teir.FunCall) and node.fun == teir.Builtin(name="subset"):
-            arg = node.args[0]
-        else:
-            arg = node
-        ret = teir.TensorType(dims=new_dims, dtype=node.type.dtype)
-        return teir.FunCall(
-            fun=teir.Builtin(name="subset", type=teir.FunctionType(args=(arg.type,), ret=ret)),
-            args=(arg,),
-            type=ret,
-        )
-
-    @classmethod
-    def _subset_closure(cls, closure, stencil_offsets, output_offsets):
-        class Subsetter(eve.NodeTranslator):
-            def visit_TensorType(self, node: teir.TensorType):
-                dims = cls._offset_dims(node.dims, stencil_offsets)
-                if dims == node.dims:
-                    return node
-                return teir.TensorType(dims=dims, dtype=node.dtype)
-
-        return teir.StencilClosure(
-            stencil=Subsetter().visit(closure.stencil),
-            output=cls._subset(closure.output, output_offsets),
-            inputs=tuple(cls._subset(inp, stencil_offsets) for inp in closure.inputs),
-        )
-
     def visit_StencilClosure(self, node, **kwargs):
         output = self.visit(node.output, **kwargs)
         inputs = tuple(self.visit(node.inputs, **kwargs))
@@ -441,11 +441,11 @@ class Lifter(eve.NodeTranslator):
             )
         stencil = call.fun
         closure = teir.StencilClosure(stencil=stencil, output=output, inputs=inputs)
-        domain_dims = self._domain_dims(node.domain)
-        stencil_offsets = self._dim_offsets(domain_dims, stencil.type.ret.dims)
-        output_offsets = self._dim_offsets(domain_dims, output.type.dims)
+        domain_dims = _domain_dims(node.domain)
+        stencil_offsets = _dim_offsets(domain_dims, stencil.type.ret.dims)
+        output_offsets = _dim_offsets(domain_dims, output.type.dims)
         if stencil_offsets or output_offsets:
-            closure = self._subset_closure(closure, stencil_offsets, output_offsets)
+            closure = _subset_closure(closure, stencil_offsets, output_offsets)
         return closure
 
     def visit_FencilDefinition(self, node, *, args, offset_provider, column_axis):
@@ -518,7 +518,7 @@ class Lifter(eve.NodeTranslator):
         )
 
         neighbor_tables = tuple(
-            teir.Sym(type=neighbor_table_type(v), id=k)
+            teir.Sym(type=_neighbor_table_type(v), id=k)
             for k, v in offset_provider.items()
             if isinstance(v, embedded.NeighborTableOffsetProvider)
         )
