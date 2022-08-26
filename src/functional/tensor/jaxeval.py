@@ -37,16 +37,23 @@ register_pytree_node(
 
 
 def _masked_value(dtype):
-    if dtype.kind == "f":
-        return np.nan
+    if dtype.name == "float32":
+        # NaN-boxing: use non-signal NaN with payload ‘1’ to represent a masked value
+        return np.uint32(0x7F800001).view("float32")
+    if dtype.name == "float64":
+        # NaN-boxing: use non-signal NaN with payload ‘1’ to represent a masked value
+        return np.uint64(0x7FFF000000000001).view("float64")
     if dtype.kind == "i":
         return -(2 ** (dtype.itemsize * 8 - 1))
     raise NotImplementedError()
 
 
 def _mask(x):
-    if x.dtype.kind == "f":
-        return ~jnp.isnan(x)
+    if x.dtype.name == "float32":
+        return x.view("uint32") != _masked_value(x.dtype).view("uint32")
+    if x.dtype.name == "float64":
+        return x.view("uint64") != _masked_value(x.dtype).view("uint64")
+    assert x.dtype.kind == "i"
     return x != _masked_value(x.dtype)
 
 
