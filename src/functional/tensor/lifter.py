@@ -214,7 +214,14 @@ class Lifter(eve.NodeTranslator):
                     type=teir.FunctionType(args=tuple(arg.type for arg in args), ret=ret),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
-            if node.fun.id in ("greater", "less", "eq"):
+            if node.fun.id in (
+                "greater",
+                "less",
+                "eq",
+                "isfinite",
+                "isinf",
+                "isnan",
+            ):
                 common = _common_tensor_type(arg.type for arg in args)
                 ret = teir.TensorType(dims=common.dims, dtype=teir.ScalarDType(name="bool", bits=8))
                 fun = teir.Builtin(
@@ -243,9 +250,6 @@ class Lifter(eve.NodeTranslator):
                 "log",
                 "gamma",
                 "cbrt",
-                "isfinite",
-                "isinf",
-                "isnan",
                 "floor",
                 "ceil",
                 "trunc",
