@@ -213,6 +213,11 @@ class PrettyPrinter(NodeTranslator):
                     self._hmerge(["else "], elseb),
                 )
                 return self._prec_parens(self._optimum(hblocks, vblocks), prec, PRECEDENCE["if_"])
+            if fun_name == "subset" and len(node.args) == 1:
+                # subset(x) → x[dims…]
+                arg = self.visit(node.args[0], prec=PRECEDENCE["__call__"])
+                dims = self.visit(node.type.dims, prec=0)
+                return self._hmerge(arg, ["["], *self._hinterleave(dims, ", "), ["]"])
 
         fun = self.visit(node.fun, prec=PRECEDENCE["__call__"])
         args = self.visit(node.args, prec=0)
