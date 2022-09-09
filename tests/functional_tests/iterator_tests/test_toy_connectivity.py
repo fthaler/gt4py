@@ -113,7 +113,7 @@ def sum_edges_to_vertices(in_edges):
 def test_sum_edges_to_vertices(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
     inp = index_field(Edge)
-    out = np_as_located_field(Vertex)(np.zeros([9]))
+    out = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
     ref = np.asarray(list(sum(row) for row in v2e_arr))
 
     run_processor(
@@ -135,7 +135,7 @@ def sum_edges_to_vertices_reduce(in_edges):
 def test_sum_edges_to_vertices_reduce(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
     inp = index_field(Edge)
-    out = np_as_located_field(Vertex)(np.zeros([9]))
+    out = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
     ref = np.asarray(list(sum(row) for row in v2e_arr))
 
     run_processor(
@@ -157,7 +157,7 @@ def first_vertex_neigh_of_first_edge_neigh_of_cells(in_vertices):
 def test_first_vertex_neigh_of_first_edge_neigh_of_cells_fencil(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
     inp = index_field(Vertex)
-    out = np_as_located_field(Cell)(np.zeros([9]))
+    out = np_as_located_field(Cell)(np.zeros([9], dtype=int))
     ref = np.asarray(list(v2e_arr[c[0]][0] for c in c2e_arr))
 
     run_processor(
@@ -181,9 +181,9 @@ def sparse_stencil(non_sparse, inp):
 
 def test_sparse_input_field(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
-    non_sparse = np_as_located_field(Edge)(np.zeros(18))
+    non_sparse = np_as_located_field(Edge)(np.zeros(18, dtype=int))
     inp = np_as_located_field(Vertex, V2E)(np.asarray([[1, 2, 3, 4]] * 9))
-    out = np_as_located_field(Vertex)(np.zeros([9]))
+    out = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
 
     ref = np.ones([9]) * 10
 
@@ -205,9 +205,9 @@ V2V = offset("V2V")
 
 def test_sparse_input_field_v2v(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
-    non_sparse = np_as_located_field(Edge)(np.zeros(9))
+    non_sparse = np_as_located_field(Edge)(np.zeros(9, dtype=int))
     inp = np_as_located_field(Vertex, V2V)(v2v_arr)
-    out = np_as_located_field(Vertex)(np.zeros([9]))
+    out = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
 
     ref = np.asarray(list(sum(row) for row in v2v_arr))
 
@@ -235,7 +235,7 @@ def slice_sparse_stencil(sparse):
 def test_slice_sparse(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
     inp = np_as_located_field(Vertex, V2V)(v2v_arr)
-    out = np_as_located_field(Vertex)(np.zeros([9]))
+    out = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
 
     ref = v2v_arr[:, 1]
 
@@ -261,7 +261,7 @@ def slice_twice_sparse_stencil(sparse):
 def test_slice_twice_sparse(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
     inp = np_as_located_field(Vertex, V2V, V2V)(v2v_arr[v2v_arr])
-    out = np_as_located_field(Vertex)(np.zeros([9]))
+    out = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
 
     ref = v2v_arr[v2v_arr][:, 2, 1]
     run_processor(
@@ -286,7 +286,7 @@ def shift_sliced_sparse_stencil(sparse):
 def test_shift_sliced_sparse(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
     inp = np_as_located_field(Vertex, V2V)(v2v_arr)
-    out = np_as_located_field(Vertex)(np.zeros([9]))
+    out = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
 
     ref = v2v_arr[:, 1][v2v_arr][:, 0]
 
@@ -312,7 +312,7 @@ def slice_shifted_sparse_stencil(sparse):
 def test_slice_shifted_sparse(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
     inp = np_as_located_field(Vertex, V2V)(v2v_arr)
-    out = np_as_located_field(Vertex)(np.zeros([9]))
+    out = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
 
     ref = v2v_arr[:, 1][v2v_arr][:, 0]
 
@@ -343,8 +343,8 @@ def lift_stencil(inp):
 def test_lift(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
     inp = index_field(Vertex)
-    out = np_as_located_field(Vertex)(np.zeros([9]))
-    ref = np.asarray(np.asarray(range(9)))
+    out = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
+    ref = np.arange(9)
 
     run_processor(
         lift_stencil[{Vertex: range(0, 9)}],
@@ -365,8 +365,8 @@ def sparse_shifted_stencil(inp):
 def test_shift_sparse_input_field(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
     inp = np_as_located_field(Vertex, V2V)(v2v_arr)
-    out = np_as_located_field(Vertex)(np.zeros([9]))
-    ref = np.asarray(np.asarray(range(9)))
+    out = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
+    ref = np.arange(9)
 
     run_processor(
         sparse_shifted_stencil[{Vertex: range(0, 9)}],
@@ -394,8 +394,8 @@ def test_shift_sparse_input_field2(fencil_processor_no_gtfn_exec):
     fencil_processor, validate = fencil_processor_no_gtfn_exec
     inp = index_field(Vertex)
     inp_sparse = np_as_located_field(Edge, E2V)(e2v_arr)
-    out1 = np_as_located_field(Vertex)(np.zeros([9]))
-    out2 = np_as_located_field(Vertex)(np.zeros([9]))
+    out1 = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
+    out2 = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
 
     offset_provider = {
         "E2V": NeighborTableOffsetProvider(e2v_arr, Edge, Vertex, 2),
@@ -438,7 +438,7 @@ def test_sparse_shifted_stencil_reduce(fencil_processor_no_gtfn_exec):
         # With our current understanding, this iterator IR program is illegal, however we might want to fix it and therefore keep the test for now.
 
     inp = np_as_located_field(Vertex, V2V)(v2v_arr)
-    out = np_as_located_field(Vertex)(np.zeros([9]))
+    out = np_as_located_field(Vertex)(np.zeros([9], dtype=int))
 
     ref = []
     for row in v2v_arr:

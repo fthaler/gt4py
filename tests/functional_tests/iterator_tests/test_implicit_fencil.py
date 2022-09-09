@@ -19,7 +19,7 @@ def dom():
 
 
 def a_field():
-    return np_as_located_field(I)(np.asarray(range(_isize)))
+    return np_as_located_field(I)(np.arange(_isize, dtype=float))
 
 
 def out_field():
