@@ -92,11 +92,21 @@ class FunCall(Expr):
     fun: Expr
     args: tuple[Expr, ...]
 
+    def __post_init__(self):
+        assert isinstance(self.fun.type, FunctionType)
+        assert self.fun.type.args == tuple(arg.type for arg in self.args)
+        assert self.fun.type.ret == self.type
+
 
 class StencilClosure(Node):
     stencil: Expr
     output: Union[SymRef, FunCall]
     inputs: tuple[Union[SymRef, FunCall], ...]
+
+    def __post_init__(self):
+        assert isinstance(self.stencil.type, FunctionType)
+        assert self.stencil.type.args == tuple(inp.type for inp in self.inputs)
+        assert self.stencil.type.ret == self.output.type
 
 
 BUILTINS = {

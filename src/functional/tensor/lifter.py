@@ -126,7 +126,7 @@ def _subset(node, offsets):
     )
 
 
-def _subset_closure(closure, stencil_offsets, output_offsets):
+def _make_closure(stencil, output, inputs, stencil_offsets, output_offsets):
     class Subsetter(eve.NodeTranslator):
         def visit_TensorType(self, node: teir.TensorType):
             dims = _offset_dims(node.dims, stencil_offsets)
@@ -134,11 +134,14 @@ def _subset_closure(closure, stencil_offsets, output_offsets):
                 return node
             return teir.TensorType(dims=dims, dtype=node.dtype)
 
-    return teir.StencilClosure(
-        stencil=Subsetter().visit(closure.stencil),
-        output=_subset(closure.output, output_offsets),
-        inputs=tuple(_subset(inp, stencil_offsets) for inp in closure.inputs),
-    )
+    if stencil_offsets:
+        stencil = Subsetter().visit(stencil)
+        inputs = tuple(_subset(inp, stencil_offsets) for inp in inputs)
+
+    if output_offsets:
+        output = _subset(output, output_offsets)
+
+    return teir.StencilClosure(stencil=stencil, output=output, inputs=inputs)
 
 
 class Lifter(eve.NodeTranslator):
@@ -444,13 +447,10 @@ class Lifter(eve.NodeTranslator):
                 ),
             )
         stencil = call.fun
-        closure = teir.StencilClosure(stencil=stencil, output=output, inputs=inputs)
         domain_dims = _domain_dims(node.domain)
         stencil_offsets = _dim_offsets(domain_dims, stencil.type.ret.dims)
         output_offsets = _dim_offsets(domain_dims, output.type.dims)
-        if stencil_offsets or output_offsets:
-            closure = _subset_closure(closure, stencil_offsets, output_offsets)
-        return closure
+        return _make_closure(stencil, output, inputs, stencil_offsets, output_offsets)
 
     def visit_FencilDefinition(self, node, *, args, offset_provider, column_axis):
         assert not node.function_definitions
