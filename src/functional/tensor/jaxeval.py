@@ -74,7 +74,7 @@ def _slice_transpose(array, src_dims, dst_dims):
         else:
             expanded_slices.append(jnp.newaxis)
 
-    sliced = array[slices]
+    sliced = jnp.asarray(array)[slices]
     transposed = sliced.transpose(axes)
     res = transposed[tuple(expanded_slices)]
     return res
