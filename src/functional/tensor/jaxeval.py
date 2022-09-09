@@ -161,48 +161,45 @@ def _to_jax(expr):
 
 
 _BUILTINS = {
-    # unary ops
-    "minimum": jnp.minimum,
-    "maximum": jnp.maximum,
-    "not_": operator.inv,
-    "abs": jnp.abs,
-    "fmod": jnp.fmod,
-    "sin": jnp.sin,
-    "cos": jnp.cos,
-    "tan": jnp.tan,
-    "arcsin": jnp.arcsin,
-    "arccos": jnp.arccos,
-    "arctan": jnp.arctan,
-    "arctan2": jnp.arctan2,
-    "sinh": jnp.sinh,
-    "cosh": jnp.cosh,
-    "tanh": jnp.tanh,
-    "arcsinh": jnp.arcsinh,
-    "arccosh": jnp.arccosh,
-    "arctanh": jnp.arctanh,
-    "sqrt": jnp.sqrt,
-    "exp": jnp.exp,
-    "log": jnp.log,
-    "cbrt": jnp.cbrt,
-    "isfinite": jnp.isfinite,
-    "isinf": jnp.isinf,
-    "isnan": jnp.isnan,
-    "floor": jnp.floor,
-    "ceil": jnp.ceil,
-    "trunc": jnp.trunc,
-    # binary ops
-    "minus": operator.sub,
-    "plus": operator.add,
-    "multiplies": operator.mul,
-    "divides": operator.truediv,
-    "greater": operator.gt,
-    "less": operator.lt,
-    "eq": operator.eq,
-    "and_": operator.and_,
-    "or_": operator.or_,
-    "power": jnp.power,
-    # ternary ops
-    "if_": jnp.where,
+    ir.BuiltinFun.ABS: jnp.abs,
+    ir.BuiltinFun.AND: operator.and_,
+    ir.BuiltinFun.ARCCOSH: jnp.arccosh,
+    ir.BuiltinFun.ARCCOS: jnp.arccos,
+    ir.BuiltinFun.ARCSINH: jnp.arcsinh,
+    ir.BuiltinFun.ARCSIN: jnp.arcsin,
+    ir.BuiltinFun.ARCTAN2: jnp.arctan2,
+    ir.BuiltinFun.ARCTANH: jnp.arctanh,
+    ir.BuiltinFun.ARCTAN: jnp.arctan,
+    ir.BuiltinFun.CBRT: jnp.cbrt,
+    ir.BuiltinFun.CEIL: jnp.ceil,
+    ir.BuiltinFun.COSH: jnp.cosh,
+    ir.BuiltinFun.COS: jnp.cos,
+    ir.BuiltinFun.DIVIDES: operator.truediv,
+    ir.BuiltinFun.EQ: operator.eq,
+    ir.BuiltinFun.EXP: jnp.exp,
+    ir.BuiltinFun.FLOOR: jnp.floor,
+    ir.BuiltinFun.FMOD: jnp.fmod,
+    ir.BuiltinFun.GREATER: operator.gt,
+    ir.BuiltinFun.IF: jnp.where,
+    ir.BuiltinFun.ISFINITE: jnp.isfinite,
+    ir.BuiltinFun.ISINF: jnp.isinf,
+    ir.BuiltinFun.ISNAN: jnp.isnan,
+    ir.BuiltinFun.LESS: operator.lt,
+    ir.BuiltinFun.LOG: jnp.log,
+    ir.BuiltinFun.MAXIMUM: jnp.maximum,
+    ir.BuiltinFun.MINIMUM: jnp.minimum,
+    ir.BuiltinFun.MINUS: operator.sub,
+    ir.BuiltinFun.MULTIPLIES: operator.mul,
+    ir.BuiltinFun.NOT: operator.inv,
+    ir.BuiltinFun.OR: operator.or_,
+    ir.BuiltinFun.PLUS: operator.add,
+    ir.BuiltinFun.POWER: jnp.power,
+    ir.BuiltinFun.SINH: jnp.sinh,
+    ir.BuiltinFun.SIN: jnp.sin,
+    ir.BuiltinFun.SQRT: jnp.sqrt,
+    ir.BuiltinFun.TANH: jnp.tanh,
+    ir.BuiltinFun.TAN: jnp.tan,
+    ir.BuiltinFun.TRUNC: jnp.trunc,
 }
 
 
@@ -238,7 +235,7 @@ class JaxEvaluator(eve.NodeTranslator):
                 return _BUILTINS[node.name](*st_args)
 
             return fun, node.type
-        if node.name == "shift":
+        if node.name == ir.BuiltinFun.SHIFT:
 
             def fun(*offsets):  # type: ignore
                 def apply(x):
@@ -348,33 +345,33 @@ class JaxEvaluator(eve.NodeTranslator):
                 return apply
 
             return fun, node.type
-        if node.name == "make_tuple":
+        if node.name == ir.BuiltinFun.MAKE_TUPLE:
 
             def fun(*args):  # type: ignore
                 return args
 
             return fun, node.type
-        if node.name == "tuple_get":
+        if node.name == ir.BuiltinFun.TUPLE_GET:
 
             def fun(idx, tup):  # type: ignore
                 return tup[idx]
 
             return fun, node.type
-        if node.name == "subset":
+        if node.name == ir.BuiltinFun.SUBSET:
 
             def fun(x):  # type: ignore
                 return _slice_transpose(x, node.type.args[0].dims, node.type.ret.dims)
 
             return fun, node.type
 
-        if node.name == "can_deref":
+        if node.name == ir.BuiltinFun.CAN_DEREF:
 
             def fun(x):  # type: ignore
                 return _mask(x)
 
             return fun, node.type
 
-        if node.name == "scan":
+        if node.name == ir.BuiltinFun.SCAN:
             full_dims = set().union(*({d.name for d in a.dims} for a in node.type.ret.args))
             noncol_dims = set().union(*({d.name for d in a.dims} for a in node.type.args[0].args))
             column_dims = full_dims - noncol_dims
@@ -405,7 +402,7 @@ class JaxEvaluator(eve.NodeTranslator):
 
             return fun, node.type
 
-        if node.name == "reduce":
+        if node.name == ir.BuiltinFun.REDUCE:
             transposed_arg_dims = []
             ret_dims = {d.name for d in node.type.ret.ret.dims}
             for arg in node.type.ret.args:

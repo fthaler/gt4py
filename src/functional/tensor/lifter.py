@@ -51,7 +51,7 @@ def _broadcast(e, t):
             type=t,
             fun=teir.Builtin(
                 type=teir.FunctionType(args=tuple(a.type for a in args), ret=t),
-                name="make_tuple",
+                name=teir.BuiltinFun.MAKE_TUPLE,
             ),
             args=tuple(args),
         )
@@ -114,13 +114,19 @@ def _subset(node, offsets):
     new_dims = _offset_dims(node.type.dims, offsets)
     if new_dims == node.type.dims:
         return node
-    if isinstance(node, teir.FunCall) and node.fun == teir.Builtin(name="subset"):
+    if (
+        isinstance(node, teir.FunCall)
+        and isinstance(node.fun, teir.Builtin)
+        and node.fun.name == teir.BuiltinFun.SUBSET
+    ):
         arg = node.args[0]
     else:
         arg = node
     ret = teir.TensorType(dims=new_dims, dtype=node.type.dtype)
     return teir.FunCall(
-        fun=teir.Builtin(name="subset", type=teir.FunctionType(args=(arg.type,), ret=ret)),
+        fun=teir.Builtin(
+            name=teir.BuiltinFun.SUBSET, type=teir.FunctionType(args=(arg.type,), ret=ret)
+        ),
         args=(arg,),
         type=ret,
     )
@@ -195,7 +201,7 @@ class Lifter(eve.NodeTranslator):
                     dims=args[0].type.dims, dtype=teir.ScalarDType(name="bool", bits=8)
                 )
                 fun = teir.Builtin(
-                    name=node.fun.id,
+                    name=teir.BuiltinFun.CAN_DEREF,
                     type=teir.FunctionType(args=(args[0].type,), ret=ret),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
@@ -213,7 +219,7 @@ class Lifter(eve.NodeTranslator):
             ):
                 ret = _common_tensor_type(arg.type for arg in args)
                 fun = teir.Builtin(
-                    name=node.fun.id,
+                    name=teir.BuiltinFun(node.fun.id.strip("_")),
                     type=teir.FunctionType(args=tuple(arg.type for arg in args), ret=ret),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
@@ -228,7 +234,7 @@ class Lifter(eve.NodeTranslator):
                 common = _common_tensor_type(arg.type for arg in args)
                 ret = teir.TensorType(dims=common.dims, dtype=teir.ScalarDType(name="bool", bits=8))
                 fun = teir.Builtin(
-                    name=node.fun.id,
+                    name=teir.BuiltinFun(node.fun.id.strip("_")),
                     type=teir.FunctionType(args=tuple(arg.type for arg in args), ret=ret),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
@@ -258,7 +264,7 @@ class Lifter(eve.NodeTranslator):
                 "trunc",
             ):
                 fun = teir.Builtin(
-                    name=node.fun.id,
+                    name=teir.BuiltinFun(node.fun.id.strip("_")),
                     type=teir.FunctionType(args=tuple(arg.type for arg in args), ret=args[0].type),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
@@ -267,7 +273,7 @@ class Lifter(eve.NodeTranslator):
                 common = _common_tensor_type(arg.type for arg in args[1:])
                 ret = teir.TensorType(dims=dims, dtype=common.dtype)
                 fun = teir.Builtin(
-                    name=node.fun.id,
+                    name=teir.BuiltinFun.IF,
                     type=teir.FunctionType(args=tuple(arg.type for arg in args), ret=ret),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
@@ -276,7 +282,7 @@ class Lifter(eve.NodeTranslator):
                 dtype = teir.TupleDType(elems=tuple(arg.type.dtype for arg in args))
                 ret = teir.TensorType(dims=dims, dtype=dtype)
                 fun = teir.Builtin(
-                    name=node.fun.id,
+                    name=teir.BuiltinFun.MAKE_TUPLE,
                     type=teir.FunctionType(args=tuple(arg.type for arg in args), ret=ret),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
@@ -284,7 +290,7 @@ class Lifter(eve.NodeTranslator):
                 index = int(args[0].value)
                 ret = teir.TensorType(dims=args[1].type.dims, dtype=args[1].type.dtype.elems[index])
                 fun = teir.Builtin(
-                    name=node.fun.id,
+                    name=teir.BuiltinFun.TUPLE_GET,
                     type=teir.FunctionType(args=tuple(arg.type for arg in args), ret=ret),
                 )
                 return teir.FunCall(type=fun.type.ret, fun=fun, args=args)
@@ -347,7 +353,7 @@ class Lifter(eve.NodeTranslator):
                 args=(args[0].type,), ret=teir.TensorType(dtype=args[0].type.dtype, dims=dims)
             )
             shift = teir.Builtin(
-                name="shift",
+                name=teir.BuiltinFun.SHIFT,
                 type=teir.FunctionType(args=tuple(s.type for s in shifts), ret=funtype),
             )
             shift_call = teir.FunCall(type=shift.type.ret, fun=shift, args=shifts)
@@ -375,7 +381,7 @@ class Lifter(eve.NodeTranslator):
             funtype = teir.FunctionType(args=tuple(a.type for a in args), ret=ret)
             scan_args = (scan_fun, forward, init)
             scan = teir.Builtin(
-                name="scan",
+                name=teir.BuiltinFun.SCAN,
                 type=teir.FunctionType(args=tuple(a.type for a in scan_args), ret=funtype),
             )
             scan_call = teir.FunCall(type=scan.type.ret, fun=scan, args=scan_args)
@@ -408,13 +414,13 @@ class Lifter(eve.NodeTranslator):
             else:
                 assert isinstance(red_fun, itir.SymRef) and red_fun.id in ("plus", "multiplies")
                 red_fun = teir.Builtin(
-                    name=red_fun.id,
+                    name=teir.BuiltinFun(red_fun.id.strip("_")),
                     type=teir.FunctionType(args=tuple(red_fun_argtypes), ret=init.type),
                 )
             funtype = teir.FunctionType(args=tuple(a.type for a in args), ret=ret)
             red_args = (red_fun, init)
             red = teir.Builtin(
-                name="reduce",
+                name=teir.BuiltinFun.REDUCE,
                 type=teir.FunctionType(args=tuple(a.type for a in red_args), ret=funtype),
             )
             red_call = teir.FunCall(type=red.type.ret, fun=red, args=red_args)

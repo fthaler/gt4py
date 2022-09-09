@@ -1,9 +1,73 @@
+import enum
 from typing import Union
 
 import eve
 from eve import Coerced, SymbolName, SymbolRef
 from eve.traits import SymbolTableTrait, ValidatedSymbolTableTrait
+from eve.type_definitions import StrEnum
 from eve.utils import noninstantiable
+
+
+@enum.unique
+class BuiltinFun(StrEnum):
+    # tuple fields
+    MAKE_TUPLE = "make_tuple"
+    TUPLE_GET = "tuple_get"
+
+    # special tensor ops
+    SUBSET = "subset"
+
+    # domain-specific builtins
+    REDUCE = "reduce"
+    SCAN = "scan"
+    SHIFT = "shift"
+
+    # element-wise unary tensor ops
+    ABS = "abs"
+    ARCCOS = "arccos"
+    ARCCOSH = "arccosh"
+    ARCSIN = "arcsin"
+    ARCSINH = "arcsinh"
+    ARCTAN2 = "arctan2"
+    ARCTAN = "arctan"
+    ARCTANH = "arctanh"
+    CAN_DEREF = "can_deref"
+    CBRT = "cbrt"
+    CEIL = "ceil"
+    COS = "cos"
+    COSH = "cosh"
+    EXP = "exp"
+    FLOOR = "floor"
+    GAMMA = "gamma"
+    ISFINITE = "isfinite"
+    ISINF = "isinf"
+    ISNAN = "isnan"
+    LOG = "log"
+    NOT = "not"
+    SINH = "sinh"
+    SIN = "sin"
+    SQRT = "sqrt"
+    TANH = "tanh"
+    TAN = "tan"
+    TRUNC = "trunc"
+
+    # element-wise binary tensor ops
+    AND = "and"
+    DIVIDES = "divides"
+    EQ = "eq"
+    FMOD = "fmod"
+    GREATER = "greater"
+    LESS = "less"
+    MAXIMUM = "maximum"
+    MINIMUM = "minimum"
+    MINUS = "minus"
+    MULTIPLIES = "multiplies"
+    OR = "or"
+    PLUS = "plus"
+    POWER = "power"
+
+    # element-wise ternary tensor ops
+    IF = "if"
 
 
 @noninstantiable
@@ -76,7 +140,7 @@ class OffsetLiteral(Expr):
 
 
 class Builtin(Expr):
-    name: str
+    name: BuiltinFun
 
 
 class SymRef(Expr):
@@ -107,27 +171,6 @@ class StencilClosure(Node):
         assert isinstance(self.stencil.type, FunctionType)
         assert self.stencil.type.args == tuple(inp.type for inp in self.inputs)
         assert self.stencil.type.ret == self.output.type
-
-
-BUILTINS = {
-    "make_tuple",
-    "tuple_get",
-    "reduce",
-    "can_deref",
-    "shift",
-    "scan",
-    "plus",
-    "minus",
-    "multiplies",
-    "divides",
-    "eq",
-    "less",
-    "greater",
-    "if_",
-    "not_",
-    "and_",
-    "or_",
-}
 
 
 class Fencil(Node, ValidatedSymbolTableTrait):
